@@ -1,4 +1,4 @@
-# Jun Desk
+# Jun
 
 An open-source support desk for B2B SaaS where the AI already knows what broke. The widget on your site notices the failed request or JavaScript error your customer just hit, so when they write "I can't pay my invoice", the AI can answer "your payment request failed with a server error at 14:02, I've flagged it to the team" instead of asking which browser they use. It runs entirely in your own Cloudflare account.
 
@@ -28,7 +28,7 @@ Then open the Worker's URL, enter the token and create a passkey (fingerprint, f
 
 > **Use the Workers Paid plan ($5/month) for the AI.** Cloudflare's Free plan gives a Worker 10 ms of CPU per request; reading an AI model's streamed answer takes far more (we measured 0.3–1 s for one widget edit), so on Free, AI replies and the Agent page's AI chats fail now and then with Cloudflare's error 1102. Paid allows 30 s by default. Everything else (inbox, widget, visitors) runs on Free. See [Workers limits](https://developers.cloudflare.com/workers/platform/limits/).
 
-> **Already have a Jun Desk in this Cloudflare account?** Give the second one its own database, bucket and queue names on the button's form (e.g. `jun-trial`, `jun-trial-files`, `jun-trial-crawl`). With the default names the new Worker binds to the existing `jun-desk` database, `jun-desk-files` bucket and `jun-desk-crawl` queue, so it shares the first desk's conversations and files.
+> **Already have Jun installed in this Cloudflare account?** Give the second one its own database, bucket and queue names on the button's form (e.g. `jun-trial`, `jun-trial-files`, `jun-trial-crawl`). With the default names the new Worker binds to the existing `jun-desk` database, `jun-desk-files` bucket and `jun-desk-crawl` queue, so it shares the first desk's conversations and files.
 
 > **If the build stops at "could not push contents of source repo to destination repo",** Cloudflare created your repo with only `README.md` and `wrangler.jsonc` and couldn't copy the rest. GitHub refused the copy: its push protection blocks a push that contains something shaped like a key. Jun's own files no longer carry any (a test's fake Stripe key did), so this should only happen with a fork that adds one ([workers-sdk#14553](https://github.com/cloudflare/workers-sdk/issues/14553) reports the same message). Use the command line below instead, or push the code into the repo it created, keeping its `wrangler.jsonc`; `git push` prints which file GitHub objects to.
 
@@ -38,14 +38,18 @@ Prefer the command line? Clone the repo, then `npm install`, `npx wrangler secre
 
 ## Upgrade
 
-Pull the new version into your copy of the repo and run `npm run deploy`:
+Jun ships as versioned releases ([Releases](https://github.com/samarsheikh001/jun/releases)). Your copy of the repo updates itself through a pull request:
 
-```sh
-git pull https://github.com/samarsheikh001/jun main
-npm install && npm run build && npm run deploy
-```
+1. **Update Jun** (`.github/workflows/update-jun.yml`) checks for a new release every day. When there is one, it opens a pull request in your repo (or updates the open one) with the new version merged into your files: files you never touched take the new version, your own edits stay, your Worker, database, bucket and queue names in `wrangler.jsonc` are kept, and anything both sides changed is listed to resolve.
+2. Merge it. A Deploy-button install redeploys on the push (Workers Builds); otherwise run `npm install && npm run deploy`.
+
+Owners and admins see **Update to vX** in the desk's sidebar when a release is out, and the version under Settings → General. Run the workflow any time from **Actions → Update Jun → Run workflow**. If it can't open pull requests in your repo, it opens an issue with a link instead; to let it, turn on **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests**.
+
+A copy made before the workflow existed: add [`.github/workflows/update-jun.yml`](.github/workflows/update-jun.yml) to it once (GitHub → Add file), then run it. Don't `git pull` this repo into a Deploy-button copy: the button's copy has no history in common with it, so Git refuses the merge.
 
 `npm run deploy` applies any new D1 migrations **before** it deploys the new Worker, so new code never runs against an old schema. Your conversations, contacts, knowledge, passkeys and visitors' chat history carry over. `scripts/upgrade-check.ts` is the test for this: it seeds an old install, upgrades it and checks everything survived. It passes from the first AI release (M2) onwards.
+
+**Releasing (maintainers):** `npm run release -- patch` (or `minor`, `major`, `x.y.z`) bumps the version in `package.json` and `shared/version.ts`, commits and tags; `git push origin main --follow-tags` publishes it (`.github/workflows/release.yml` makes the GitHub Release with notes).
 
 ## Put the widget on your site
 
@@ -80,7 +84,7 @@ Colour, logo, greeting, button side and business hours are set in **Settings** a
 window.JunDesk?.reportError({ message: "Row 42: missing email", code: "import.row_invalid" });
 ```
 
-**Page actions:** your page tells the AI what can be done right here, and the AI can only pick from that list. Register actions in the [WebMCP](https://developer.chrome.com/docs/ai/webmcp/imperative-api) shape (`name`, `description`, `inputSchema`, `execute`, `annotations`) plus a few extras: `pages` (offer it only on `/pricing` or `/plans/*`), `key` (one instance per product card), `element` (highlighted while it runs), `context` (small facts for the AI, like the price), `available` (a check such as "in stock"), `undo` (gives the chat an Undo button), `risk` (`"confirm"`, the default, shows a summary and a Confirm button; `"auto"` runs at once; `"human"` sends the request to your team), `status` (the line the chat shows while it runs, like `"Checking fares"`; without it one is made from the name) and `widget` (a card made on the desk: return an object and the chat shows it as that card). A card's button can run one of your actions too: give it the action `page:<name>` (a cart row's Remove: `{"type": "page:remove_from_cart", "payload": {"id": "mug"}}`) and the press offers that action with the payload and the card's fields, confirmed like any other. When a visitor asks for one, the chat asks for anything the AI couldn't fill in (a short list becomes buttons, a date a date picker), confirms, runs your function in their browser with their own login, and shows Done. The AI never calls anything that isn't on the page, and your functions never leave the page: only the descriptions do. The loader also implements `document.modelContext` where the browser lacks it, so plain WebMCP registrations (and `<form toolname>` forms, where Chrome supports them) work too, and tools you register for Chrome's agent work with Jun Desk with no extra code.
+**Page actions:** your page tells the AI what can be done right here, and the AI can only pick from that list. Register actions in the [WebMCP](https://developer.chrome.com/docs/ai/webmcp/imperative-api) shape (`name`, `description`, `inputSchema`, `execute`, `annotations`) plus a few extras: `pages` (offer it only on `/pricing` or `/plans/*`), `key` (one instance per product card), `element` (highlighted while it runs), `context` (small facts for the AI, like the price), `available` (a check such as "in stock"), `undo` (gives the chat an Undo button), `risk` (`"confirm"`, the default, shows a summary and a Confirm button; `"auto"` runs at once; `"human"` sends the request to your team), `status` (the line the chat shows while it runs, like `"Checking fares"`; without it one is made from the name) and `widget` (a card made on the desk: return an object and the chat shows it as that card). A card's button can run one of your actions too: give it the action `page:<name>` (a cart row's Remove: `{"type": "page:remove_from_cart", "payload": {"id": "mug"}}`) and the press offers that action with the payload and the card's fields, confirmed like any other. When a visitor asks for one, the chat asks for anything the AI couldn't fill in (a short list becomes buttons, a date a date picker), confirms, runs your function in their browser with their own login, and shows Done. The AI never calls anything that isn't on the page, and your functions never leave the page: only the descriptions do. The loader also implements `document.modelContext` where the browser lacks it, so plain WebMCP registrations (and `<form toolname>` forms, where Chrome supports them) work too, and tools you register for Chrome's agent work with Jun with no extra code.
 
 ```js
 const remove = JunDesk.registerAction({
@@ -115,7 +119,7 @@ It hands a conversation to your team when it can't answer from your docs, when t
 
 Each teammate turns them on in **Settings → Notifications** ("Turn on notifications on this device", once per browser or phone) and picks what they want: a chat needs a person, a chat is assigned to them, a customer replies in their chat, or someone @mentions them. With the desk open in a tab you're not looking at, that tab shows the notification; with it closed, your devices get a Web Push (standard VAPID, nothing to configure: the key is created on first use). Nothing is sent while you're looking at the desk. Clicking one opens the conversation.
 
-**iPhone and iPad:** Safari only allows push for web apps on the Home Screen. Open the desk in Safari, tap Share → **Add to Home Screen**, open Jun Desk from there and turn notifications on.
+**iPhone and iPad:** Safari only allows push for web apps on the Home Screen. Open the desk in Safari, tap Share → **Add to Home Screen**, open Jun from there and turn notifications on.
 
 ## Issue trackers
 
@@ -169,4 +173,4 @@ Code lives in `worker/` (API and Durable Objects), `web/` (dashboard and widget 
 
 ## License
 
-The desk is [AGPL-3.0](LICENSE). The widget loader and the agent-config format are MIT, so putting Jun Desk on your site never triggers a license review. Outside contributions will need a CLA, which isn't set up yet; see [CONTRIBUTING.md](CONTRIBUTING.md).
+The desk is [AGPL-3.0](LICENSE). The widget loader and the agent-config format are MIT, so putting Jun on your site never triggers a license review. Outside contributions will need a CLA, which isn't set up yet; see [CONTRIBUTING.md](CONTRIBUTING.md).
