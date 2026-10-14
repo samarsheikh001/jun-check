@@ -20,13 +20,13 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "jun-check",
-      "migrations_dir": "migrations","database_id": "12bd20c9-8d09-4643-8def-86439e9251ac"
+      "database_name": "jun-check", "database_id": "12bd20c9-8d09-4643-8def-86439e9251ac",
+      "migrations_dir": "migrations"
     }
   ],
 
   // Attachments (W-06).
-  "r2_buckets": [{ "binding": "FILES", "bucket_name": "jun-check-files","preview_bucket_name": "jun-check-files" }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "jun-check-files", "preview_bucket_name": "jun-check-files" }],
 
   // Workers AI: embeddings, reranking, and the zero-key default chat model.
   "ai": { "binding": "AI" },
