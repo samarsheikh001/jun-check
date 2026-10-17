@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { MAX_CSAT_COMMENT, type Attachment, type ConversationSummary, type CsatRating, type Message } from "../../shared/protocol.ts";
 import { offersRating } from "../../shared/inbox.ts";
 import { isIntentName, type IntentSpec } from "../../shared/intents.ts";
-import { logoFor, radiusVars, textOn, type WidgetLook } from "../../shared/appearance.ts";
+import { logoFor, radiusVars, textOn, type WidgetLook, type WidgetTheme } from "../../shared/appearance.ts";
 import { ACTION_ONLY_BODY, type MessageAction } from "../../shared/actions.ts";
+import { allowedToRun, answersSeq, isPageControl, pointOf, reloadedResult } from "../../shared/page-control.ts";
 import { actionWaits, restSummary, waitingCardLine } from "../../shared/island.ts";
 import { pickOpenWidget, WIDGET_ONLY_BODY, widgetWaiting, widgetSummary, type MessageWidget } from "../../shared/widgets.ts";
 import { Composer } from "../components/Composer.tsx";
@@ -12,8 +13,7 @@ import { formatTime, uploadFile, useThread, useTypingSignal, type PendingMessage
 import { playChime, unlockSoundOnInteraction } from "../lib/sound.ts";
 import { AiAnswer, RunSteps, runLine } from "./answer.tsx";
 import { AUTO_RUN_WITHIN_MS } from "./action.tsx";
-import { BarHead, Chips, Glass, Typewriter, useBarFrame } from "./bar.tsx";
-import { Badge, MiniCard, useCardFrame } from "./card.tsx";
+import { Badge, MiniCard, morph, useCardFrame, usePhoneFrame } from "./card.tsx";
 import { Island, IslandChips, IslandControls, IslandRow, IslandTop, NudgeLine, RestPill, StatusLine, type IslandState } from "./island.tsx";
 
 // The chat UI inside the widget iframe. The visitor's token is created only when they
@@ -87,6 +87,90 @@ function writeEnded(key: string, ids: string[]): void {
     localStorage.setItem(endedKey(key), JSON.stringify(memoryEnded));
   } catch {
     // storage blocked: remembered until the page reloads
+  }
+}
+
+// AI-32: page actions this tab started and hasn't heard back about. A click that loads a new page
+// can take the page (and this frame) down before the result is sent; after the reload the frame closes
+// such a step (reloadedResult) so the run goes on. Session storage: this tab only, consent rules as above.
+const RUNS_KEY = "jun:runs";
+let memoryRuns: string[] = [];
+function readRuns(): string[] {
+  if (!persist) return memoryRuns;
+  try {
+    const list: unknown = JSON.parse(sessionStorage.getItem(RUNS_KEY) ?? "[]");
+    return Array.isArray(list) ? list.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return memoryRuns;
+  }
+}
+function writeRuns(ids: string[]): void {
+  const before = readRuns();
+  const added = ids.some((id) => !before.includes(id));
+  memoryRuns = ids.slice(-20);
+  if (!persist) return;
+  try {
+    sessionStorage.setItem(RUNS_KEY, JSON.stringify(memoryRuns));
+    if (added) sessionStorage.setItem(`${RUNS_KEY}:at`, String(Date.now()));
+  } catch {
+    // storage blocked: only this page knows
+  }
+}
+/** A step this tab started in the last 2 minutes is still unanswered: a page load cut a run short. */
+function runCutShort(): boolean {
+  try {
+    return readRuns().length > 0 && Date.now() - Number(sessionStorage.getItem(`${RUNS_KEY}:at`) ?? 0) < 120_000;
+  } catch {
+    return false;
+  }
+}
+
+// AI-32: "Always allow" on a page-control Confirm card: this visitor lets the AI click, type and choose
+// on this site without asking each time. Same consent rules as the token; "Ask me before each step" undoes it.
+const allowKey = (key: string) => `jun:allow-page:${key}`;
+let memoryAllow = false;
+function readAllow(key: string): boolean {
+  if (!persist) return memoryAllow;
+  try {
+    return localStorage.getItem(allowKey(key)) === "1" || memoryAllow;
+  } catch {
+    return memoryAllow;
+  }
+}
+function writeAllow(key: string, on: boolean): void {
+  memoryAllow = on;
+  if (!persist) return;
+  try {
+    if (on) localStorage.setItem(allowKey(key), "1");
+    else localStorage.removeItem(allowKey(key));
+  } catch {
+    // storage blocked: remembered until the page reloads
+  }
+}
+
+// The messages this tab sent (clientMsgIds), for the tab's session: page actions run only in the tab
+// that asked for them, never in every tab the chat is open in. Same consent rules as above.
+const SENT_KEY = "jun:sent";
+let memorySent: string[] = [];
+/** This tab's record, or null when it can't keep one (no consent yet, storage blocked). */
+function readSent(): string[] | null {
+  if (!persist) return null;
+  try {
+    const list: unknown = JSON.parse(sessionStorage.getItem(SENT_KEY) ?? "[]");
+    return Array.isArray(list) ? list.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return null;
+  }
+}
+function noteSent(clientMsgId: string): void {
+  const ids = readSent() ?? memorySent;
+  if (ids.includes(clientMsgId)) return;
+  memorySent = [...ids, clientMsgId].slice(-50);
+  if (!persist) return;
+  try {
+    sessionStorage.setItem(SENT_KEY, JSON.stringify(memorySent));
+  } catch {
+    // storage blocked: this page remembers
   }
 }
 
@@ -176,6 +260,21 @@ const postToHost = (message: unknown) => window.parent !== window && window.pare
  * page trail; already masked) and (AI-21) the page's actions. Both undefined if there's no
  * loader or it's slow.
  */
+/**
+ * The host page's actions are loaded (its reply to a context request carries a list): the loader drops
+ * a jun:run that arrives before then, which happens right after a page load. Looks for up to 3 s.
+ */
+let pageActionsReady: Promise<void> | null = null;
+function whenPageActionsReady(): Promise<void> {
+  pageActionsReady ??= (async () => {
+    for (let i = 0; i < 15; i++) {
+      if ((await hostContext()).actions !== undefined) return;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  })();
+  return pageActionsReady;
+}
+
 function hostContext(): Promise<{ context?: unknown; actions?: unknown }> {
   if (window.parent === window) return Promise.resolve({});
   const id = crypto.randomUUID();
@@ -197,14 +296,14 @@ const unread = (c: ConversationSummary) => c.lastMessageAuthor === "agent" && c.
 
 interface WidgetConfig extends WidgetLook {
   ai: boolean;
+  /** AI-32: the desk's choice before page control acts (only "allow-always" offers Always allow). */
+  pageControlConfirm?: string;
   hours: { open: boolean; back: string | null } | null;
   /** W-12: ask for a rating when a conversation is resolved. */
   csat: boolean;
 }
 
-/** In a frame on a host page (the loader's, or the Appearance preview), as the "Ask anything…" bar. */
-const asBar = (look: WidgetLook) => look.launcher === "bar" && window.parent !== window;
-/** In a frame, as the morphing island (D-39). */
+/** In a frame on a host page (the loader's, or the Appearance preview), as the morphing island (D-39). */
 const asIsland = (look: WidgetLook) => look.launcher === "island" && window.parent !== window;
 /** The island on its near-black surface (the default; `page` follows the theme). */
 const islandDark = (look: WidgetLook) => asIsland(look) && look.islandSurface !== "page";
@@ -235,10 +334,8 @@ function applyLook(look: WidgetLook): void {
     root.style.setProperty("--accent", look.color);
     root.style.setProperty("--accent-text", textOn(look.color));
   }
-  // The bar has one look (a white bar, the chat on dark glass). Its page stays light: a frame
-  // whose colour scheme differs from the host page's gets an opaque backdrop. The island follows
-  // the theme like the chat window; its page stays light the same way (widget.css).
-  root.classList.toggle("bar", asBar(look));
+  // The island follows the theme like the chat window; its page stays light: a frame whose colour
+  // scheme differs from the host page's gets an opaque backdrop (widget.css).
   root.classList.toggle("island", asIsland(look));
   // D-39: the island's own near-black palette (widget.css, html.island-dark); a near-black brand
   // colour would vanish on it, so its buttons go white there instead.
@@ -247,7 +344,7 @@ function applyLook(look: WidgetLook): void {
     root.style.setProperty("--accent", "#f5f5f5");
     root.style.setProperty("--accent-text", "#0c0c0d");
   }
-  if (look.theme === "auto" || asBar(look)) delete root.dataset.theme;
+  if (look.theme === "auto") delete root.dataset.theme;
   else root.dataset.theme = look.theme;
   for (const [name, value] of Object.entries(radiusVars(look.radius))) root.style.setProperty(name, value);
 }
@@ -257,7 +354,12 @@ export function WidgetApp({ widgetKey }: { widgetKey: string }) {
   const [saved, setSaved] = useState<WidgetConfig | null>(null);
   /** Appearance preview only: the desk's unsaved look, on top of the saved config. */
   const [draft, setDraft] = useState<WidgetLook | null>(null);
-  const config = useMemo(() => (saved && draft ? { ...saved, ...draft } : saved), [saved, draft]);
+  /** D-92: the host site's theme (data-theme, JunDesk.setTheme), over the desk's; null = the desk's. */
+  const [hostTheme, setHostTheme] = useState<WidgetTheme | null>(null);
+  const config = useMemo(() => {
+    const look = saved && draft ? { ...saved, ...draft } : saved;
+    return look && hostTheme ? { ...look, theme: hostTheme } : look;
+  }, [saved, draft, hostTheme]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   /**
    * The chat opens on the ongoing conversation, or a new one; `list` is the visitor's earlier
@@ -271,6 +373,31 @@ export function WidgetApp({ widgetKey }: { widgetKey: string }) {
   const [starts, setStarts] = useState(0);
   const threadKey = view.kind === "thread" ? (view.mount ?? view.id ?? `new${starts}`) : "list";
   const [open, setOpen] = useState(window.parent === window);
+  /** Opening from the card: the fallback if the host page never answers (see openChat). */
+  const openFallback = useRef(0);
+  /** D-90: the view to show with the chat once the host says it's open (openChat). */
+  const pendingView = useRef<typeof view | null>(null);
+  /** D-90: opens or closes the chat, morphing from or to the greeting card (set each render, below). */
+  const switchOpen = useRef<(next: boolean) => void>(setOpen);
+  /** D-90: a morph between the card and the chat is running (the frame stays unclipped meanwhile). */
+  const [morphing, setMorphing] = useState(false);
+  /** Opened from the card's composer: the chat's own box takes the cursor once it's there (after the morph). */
+  const focusComposer = useRef(false);
+  useEffect(() => {
+    if (!open || morphing || !focusComposer.current) return;
+    focusComposer.current = false;
+    // The thread may still be drawing its box (a skeleton first): look for up to a second.
+    let tries = 0;
+    let frame = 0;
+    const find = () => {
+      const box = document.querySelector<HTMLTextAreaElement>(".w-shell textarea:not([disabled])");
+      if (box) box.focus();
+      else if (tries++ < 60) frame = requestAnimationFrame(find);
+    };
+    find();
+    return () => cancelAnimationFrame(frame);
+  }, [open, morphing]);
+  const phoneFrame = usePhoneFrame();
   /** D-34: the panel's Expand (740px tall), the card hidden for this page (then a "Chat with us" pill), the suggestions dismissed. */
   const [grown, setGrown] = useState(false);
   const [miniHidden, setMiniHidden] = useState(false);
@@ -366,12 +493,20 @@ export function WidgetApp({ widgetKey }: { widgetKey: string }) {
       if (preview && data?.type === "jun:preview" && e.origin === window.location.origin && data.look) {
         setDraft(data.look as WidgetLook);
       }
-      if (data?.type === "jun:open") setOpen(true);
-      if (data?.type === "jun:close") setOpen(false);
+      if (data?.type === "jun:open" || data?.type === "jun:close") clearTimeout(openFallback.current);
+      if (data?.type === "jun:open") switchOpen.current(true);
+      if (data?.type === "jun:close") switchOpen.current(false);
+      if (data?.type === "jun:session" || data?.type === "jun:theme") {
+        const t = data.theme;
+        setHostTheme(t === "light" || t === "dark" || t === "auto" ? t : null);
+      }
       if (data?.type === "jun:session" || data?.type === "jun:consent") {
         if (typeof data.persist === "boolean") setPersist(api.key, data.persist);
         if (typeof data.sessionId === "string") setSessionId(data.sessionId);
       }
+      // AI-32: a run's click loaded this page: open the chat so the run goes on here (the thread closes
+      // the cut-off step and the next one starts), instead of waiting for the visitor to open it.
+      if (data?.type === "jun:session" && !preview && runCutShort()) postToHost({ type: "jun:open" });
       // Who the host page's signed-in user is (or that they signed out).
       if ((data?.type === "jun:session" && typeof data.userToken === "string") || data?.type === "jun:identify") {
         const userToken = typeof data.userToken === "string" ? data.userToken : null;
@@ -415,8 +550,8 @@ export function WidgetApp({ widgetKey }: { widgetKey: string }) {
     return () => window.removeEventListener("message", onMessage);
   }, [api]);
 
-  // Before paint: the island and the bar size their frame before paint too, and their first paint
-  // must already be on the transparent page (html.island / html.bar), not the plain white one.
+  // Before paint: the island sizes its frame before paint too, and its first paint must already
+  // be on the transparent page (html.island), not the plain white one.
   useLayoutEffect(() => {
     if (config) applyLook(config);
   }, [config]);
@@ -449,19 +584,49 @@ export function WidgetApp({ widgetKey }: { widgetKey: string }) {
     setView((v) => (v.kind === "thread" && !(v.id || v.opener || v.intent || v.first || v.human) ? { kind: "thread", id } : v));
   }, [api, conversations]);
 
-  // W-04 card launcher (D-34): the frame draws the closed card itself, and sizes itself to it.
+  // W-04 chat window with its greeting card (D-34, D-89): the frame draws the closed card itself, in a frame the open chat's size, clipped to the card (D-90).
   const cardLauncher = Boolean(config && config.launcher === "card" && window.parent !== window);
-  const framed = Boolean(config && !asBar(config) && !asIsland(config) && window.parent !== window);
-  useCardFrame(cardLauncher, config?.position ?? "right", open && framed, grown && framed, closedRef, miniHidden);
+  const framed = Boolean(config && !asIsland(config) && window.parent !== window);
+  useCardFrame({
+    card: cardLauncher,
+    side: config?.position ?? "right",
+    open: open && framed,
+    grown: grown && framed,
+    closed: closedRef,
+    pill: miniHidden,
+    scheme: config?.theme === "dark" ? "dark" : config?.theme === "light" ? "light" : "light dark",
+    hold: morphing,
+  });
+  // D-90: with the greeting card the frame is transparent, closed and open (the surface draws itself).
   useLayoutEffect(() => {
-    document.documentElement.classList.toggle("mini", cardLauncher && !open);
-  }, [cardLauncher, open]);
-  // The panel's entrance (the reference's `enter .25s ease-out`), drawn here to keep the loader small.
-  // Started before paint, so the frame's first open paint (maybe still card-sized) is transparent.
+    const root = document.documentElement;
+    root.classList.toggle("mini", cardLauncher);
+    root.classList.toggle("phone", cardLauncher && phoneFrame);
+  }, [cardLauncher, phoneFrame]);
+  // Every open and close goes through the host (it answers "jun:open" / "jun:close"); with the
+  // greeting card, the switch morphs between the card and the chat (D-90).
+  switchOpen.current = (next) => {
+    const nextView = next ? pendingView.current : null;
+    pendingView.current = null;
+    const apply = () => {
+      if (nextView) setView(nextView);
+      setOpen(next);
+    };
+    if (!cardLauncher || next === open) return apply();
+    setMorphing(true);
+    const root = document.documentElement;
+    root.dataset.morph = `${miniHidden ? "pill" : "card"}-${next ? "open" : "close"}`;
+    void morph(apply, { opening: next, phone: phoneFrame }).then(() => {
+      delete root.dataset.morph;
+      setMorphing(false);
+    });
+  };
+  // The plain button's panel entrance (the reference's `enter .25s ease-out`), drawn here to keep
+  // the loader small. Started before paint, so the frame's first open paint is transparent.
   useLayoutEffect(() => {
-    if (!framed || !open || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    if (!framed || cardLauncher || !open || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     shellRef.current?.animate([{ opacity: 0, transform: "translateY(12px)" }, { opacity: 1, transform: "none" }], { duration: 250, easing: "ease-out" });
-  }, [framed, open]);
+  }, [framed, cardLauncher, open]);
   // Esc closes the chat, as it did.
   useEffect(() => {
     if (!framed || !open) return;
@@ -478,6 +643,7 @@ export function WidgetApp({ widgetKey }: { widgetKey: string }) {
   const threadProps = {
     api,
     csat: config.csat,
+    offerAllowAlways: (config.pageControlConfirm ?? "allow-always") === "allow-always",
     away: Boolean(config.hours && !config.hours.open),
     placeholder: config.placeholder,
     sessionId,
@@ -503,57 +669,38 @@ export function WidgetApp({ widgetKey }: { widgetKey: string }) {
     endIntent: () => setView((v) => (v.kind === "thread" && v.intent ? { kind: "thread", id: v.id, ...(v.mount ? { mount: v.mount } : {}) } : v)),
   };
 
-  // W-04 bar launcher (D-32) and island (D-39): one conversation at a time, opened from the control itself.
-  if (asBar(config) || asIsland(config)) {
+  // W-04 island (D-39): one conversation at a time, opened from the control itself.
+  if (asIsland(config)) {
     const id = view.kind === "thread" ? view.id : null;
-    const setBarOpen = (next: boolean) => {
+    const setIslandOpen = (next: boolean) => {
       setOpen(next);
       postToHost({ type: next ? "jun:open" : "jun:close" });
     };
-    const away = config.hours && !config.hours.open ? `back ${config.hours.back ?? "soon"}` : null;
-    if (asIsland(config)) {
-      const summary = conversations.find((c) => c.id === id) ?? null;
-      const cardTheme = islandDark(config) ? "dark" : effectiveTheme(config);
-      return (
-        <WidgetThread
-          key={threadKey}
-          {...threadProps}
-          conversationId={id}
-          summary={summary}
-          opener={view.kind === "thread" ? view.opener : undefined}
-          intent={view.kind === "thread" ? view.intent : undefined}
-          island={{
-            name: config.workspaceName,
-            logoUrl: logoFor(config, cardTheme === "dark"),
-            suggestions: config.suggestions,
-            placeholder: config.placeholder,
-            neon: config.neon,
-            cardTheme,
-            unread: Boolean(summary && unread(summary)),
-            setOpen: setBarOpen,
-            newChat: () => {
-              // Older open chats too: after a reload the island starts fresh, not in one of those.
-              for (const c of conversations) if (c.status !== "resolved") markEnded(api.key, c.id);
-              if (id) markEnded(api.key, id);
-              setView({ kind: "thread", id: null });
-            },
-          }}
-        />
-      );
-    }
+    const summary = conversations.find((c) => c.id === id) ?? null;
+    const cardTheme = islandDark(config) ? "dark" : effectiveTheme(config);
     return (
       <WidgetThread
         key={threadKey}
         {...threadProps}
         conversationId={id}
-        summary={conversations.find((c) => c.id === id) ?? null}
+        summary={summary}
         opener={view.kind === "thread" ? view.opener : undefined}
         intent={view.kind === "thread" ? view.intent : undefined}
-        bar={{
-          head: <BarHead name={config.workspaceName} logoUrl={logoFor(config, true)} sub={away} onClose={() => setBarOpen(false)} />,
+        island={{
+          name: config.workspaceName,
+          logoUrl: logoFor(config, cardTheme === "dark"),
           suggestions: config.suggestions,
-          side: config.position,
-          setOpen: setBarOpen,
+          placeholder: config.placeholder,
+          neon: config.neon,
+          cardTheme,
+          unread: Boolean(summary && unread(summary)),
+          setOpen: setIslandOpen,
+          newChat: () => {
+            // Older open chats too: after a reload the island starts fresh, not in one of those.
+            for (const c of conversations) if (c.status !== "resolved") markEnded(api.key, c.id);
+            if (id) markEnded(api.key, id);
+            setView({ kind: "thread", id: null });
+          },
         }}
       />
     );
@@ -568,37 +715,46 @@ export function WidgetApp({ widgetKey }: { widgetKey: string }) {
   const logoUrl = logoFor(config, effectiveTheme(config) === "dark");
   /** The conversation the chat would show: the one on screen, else the ongoing one. */
   const current = view.kind === "thread" && view.id ? view.id : (conversations.find((c) => c.status !== "resolved")?.id ?? null);
-  const openChat = (next?: typeof view) => {
-    if (next) setView(next);
-    setOpen(true);
+  // From the card: the chat opens (and the card morphs into it, D-90) when the host answers
+  // "jun:open", so the loader's state and the frame's never disagree. If no answer comes, open anyway.
+  const openChat = (next?: typeof view, type = false) => {
+    pendingView.current = next ?? null;
+    focusComposer.current = type;
     postToHost({ type: "jun:open" });
+    clearTimeout(openFallback.current);
+    openFallback.current = window.setTimeout(() => switchOpen.current(true), 300);
   };
 
   // Closed, as the card launcher: the welcome card, or the "Chat with us" pill once it's hidden.
   if (cardLauncher && !open) {
     return (
-      <div className="w-closed" ref={closedRef}>
+      <div className="w-closed" ref={closedRef} data-side={config.position}>
         {miniHidden ? (
           <button className="w-launcher" onClick={() => openChat()}>Chat with us</button>
         ) : (
-          <MiniCard
-            name={config.workspaceName}
-            sub={opener?.from ?? sub}
-            logoUrl={logoUrl}
-            welcome={opener ? (opener.page || opener.inviteId ? opener.text : `${opener.text} Tell me what you were trying to do and I'll take a look.`) : config.greeting}
-            placeholder={config.placeholder}
-            onOpen={() => openChat()}
-            onContact={() => openChat({ kind: "thread", id: current, human: true })}
-            onNewChat={() => openChat({ kind: "thread", id: null })}
-            onHide={() => setMiniHidden(true)}
-            icon={(d) => <Icon d={d} />}
-          />
+          <>
+            {/* D-90: the surface (background, hairline, shadow), the same element in the open chat. */}
+            <div className="w-edge" aria-hidden="true" />
+            <MiniCard
+              name={config.workspaceName}
+              sub={opener?.from ?? sub}
+              logoUrl={logoUrl}
+              welcome={opener ? (opener.page || opener.inviteId ? opener.text : `${opener.text} Tell me what you were trying to do and I'll take a look.`) : config.greeting}
+              placeholder={config.placeholder}
+              onOpen={() => openChat()}
+              onType={() => openChat(undefined, true)}
+              onContact={() => openChat({ kind: "thread", id: current, human: true })}
+              onNewChat={() => openChat({ kind: "thread", id: null })}
+              onHide={() => setMiniHidden(true)}
+              icon={(d) => <Icon d={d} />}
+            />
+          </>
         )}
       </div>
     );
   }
 
-  return (
+  const shell = (
     <div className={`w-shell ${view.kind}`} ref={shellRef}>
       <header className="w-head">
         <span className="w-title">
@@ -666,6 +822,15 @@ export function WidgetApp({ widgetKey }: { widgetKey: string }) {
       )}
     </div>
   );
+  // D-90: the card's surface, under the chat (widget.css draws the chat on it, transparent).
+  return cardLauncher ? (
+    <>
+      <div className="w-edge open" aria-hidden="true" />
+      {shell}
+    </>
+  ) : (
+    shell
+  );
 }
 
 /** A line icon on the earlier Jun widget's 24px grid (shown at 18px). */
@@ -683,6 +848,7 @@ function WidgetThread({
   conversationId,
   summary,
   csat,
+  offerAllowAlways,
   away,
   opener,
   first,
@@ -696,13 +862,14 @@ function WidgetThread({
   onConversation,
   endIntent,
   intent,
-  bar,
   island,
 }: {
   api: WidgetApi;
   conversationId: string | null;
   summary: ConversationSummary | null;
   csat: boolean;
+  /** AI-32: the desk lets visitors choose "Always allow" for page control. */
+  offerAllowAlways: boolean;
   away: boolean;
   opener?: Opener | undefined;
   first?: string | undefined;
@@ -718,8 +885,6 @@ function WidgetThread({
   onConversation: (c: ConversationSummary) => void;
   endIntent: () => void;
   intent?: ChatIntent | undefined;
-  /** W-04 bar launcher: the chat panel's header, the suggested questions, and opening or folding it. */
-  bar?: { head: ReactNode; suggestions: string[]; side: "left" | "right"; setOpen: (open: boolean) => void };
   /** W-04 island (D-39): what its states show, and opening or closing it. */
   island?: {
     name: string;
@@ -760,13 +925,30 @@ function WidgetThread({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, conversationId]);
 
-  const thread = useThread({
+  const live = useThread({
     socketUrl: conversationId && initial ? `/api/widget/${api.key}/conversations/${conversationId}/ws` : null,
     ...(api.token ? { protocols: [api.token] } : {}),
     initialMessages: useMemo(() => initial ?? [], [initial]),
     other: "agent",
     onConversation,
+    onSent: noteSent,
   });
+  // AI-32: with "Always allow" on, page control's waiting steps read as `auto` here, so every place that
+  // decides "ask or run" (the card, the island, the auto-run) runs them; the server's record is unchanged.
+  const [allowStored, setAllowPage] = useState(() => readAllow(api.key));
+  // A visitor's earlier "Always allow" counts only while the desk still offers it.
+  const allowPage = allowStored && offerAllowAlways;
+  const allowAlways = (on: boolean) => {
+    writeAllow(api.key, on);
+    setAllowPage(on);
+  };
+  const allowedMessages = useMemo(
+    () => (allowPage ? live.messages.map((m) => (m.authorType === "ai" && m.meta.action && allowedToRun(m.meta.action) !== m.meta.action ? { ...m, meta: { ...m.meta, action: allowedToRun(m.meta.action) } } : m)) : live.messages),
+    [live.messages, allowPage],
+  );
+  const thread = { ...live, messages: allowedMessages };
+  // The newest page-control step: "Ask me first" shows under it while Always allow is on.
+  const lastPageStep = allowPage ? allowedMessages.findLast((m) => m.authorType === "ai" && isPageControl(m.meta.action?.name))?.meta.action?.runId : undefined;
   const onTyping = useTypingSignal(thread.setTyping);
 
   const lastMessage = thread.messages.at(-1);
@@ -842,6 +1024,7 @@ function WidgetThread({
     // element once saved. Marked before anything is awaited, so a quick second send is held.
     creating.current = true;
     startingId.current = crypto.randomUUID();
+    noteSent(startingId.current);
     setStarting(body);
     const { context, actions } = await hostContext();
     // Create the visitor (if needed) and the conversation in one go.
@@ -895,15 +1078,39 @@ function WidgetThread({
   // it again (an auto action looped, re-running on the page and flooding the server with results).
   const started = useRef(new Set<string>());
   const startAction = (action: MessageAction, input: Record<string, unknown>) => {
-    if (started.current.has(action.runId)) return;
+    // Started on an earlier page of this tab: the reload check closes it, never run again here.
+    if (started.current.has(action.runId) || elsewhere.has(action.runId) || readRuns().includes(action.runId)) return;
     started.current.add(action.runId);
+    writeRuns([...readRuns().filter((id) => id !== action.runId), action.runId]);
     setRunning((r) => ({ ...r, [action.runId]: true }));
-    postToHost({ type: "jun:run", runId: action.runId, id: action.id, input });
+    void whenPageActionsReady().then(() => postToHost({ type: "jun:run", runId: action.runId, id: action.id, input }));
   };
+  // AI-32: a step started before this page loaded that's still pending never reported back: the page
+  // went away under it (a click that opened a new page). Close it once the socket is open, so the AI's
+  // follow-up turn reads the new page instead of the run stopping (and its card asking again).
+  useEffect(() => {
+    if (thread.state !== "open") return;
+    const mine = readRuns();
+    if (!mine.length) return;
+    // Forget the steps the server already has a result for.
+    const settled = mine.filter((id) => thread.messages.some((m) => m.meta.action?.runId === id && m.meta.action.status !== "pending"));
+    if (settled.length) writeRuns(mine.filter((id) => !settled.includes(id)));
+    for (const m of thread.messages) {
+      const a = m.authorType === "ai" ? m.meta.action : undefined;
+      if (!a || !mine.includes(a.runId) || started.current.has(a.runId)) continue;
+      writeRuns(readRuns().filter((id) => id !== a.runId));
+      if (a.status !== "pending") continue;
+      started.current.add(a.runId);
+      const { status, result } = reloadedResult(a.name);
+      thread.actionResult(a.runId, status, result);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [thread.state, thread.messages]);
   // D-78: an action that runs without asking starts here, not from its card: in the island a run
   // stays a line and the card isn't drawn. Only the newest message, once, and only live (as the card did).
   const autoAction = lastMessage?.authorType === "ai" ? lastMessage.meta.action : undefined;
-  const autoNow = Boolean(autoAction && autoAction.status === "pending" && autoAction.risk === "auto" && !autoAction.missing.length && Date.now() - lastMessage!.createdAt < AUTO_RUN_WITHIN_MS);
+  // Never one started on an earlier page (a click that loaded this one): the reload check above closes it.
+  const autoNow = Boolean(autoAction && autoAction.status === "pending" && autoAction.risk === "auto" && !autoAction.missing.length && Date.now() - lastMessage!.createdAt < AUTO_RUN_WITHIN_MS && !(readRuns().includes(autoAction.runId) && !started.current.has(autoAction.runId)));
   useEffect(() => {
     if (autoNow && autoAction) startAction(autoAction, autoAction.input);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -930,7 +1137,33 @@ function WidgetThread({
     if (runWasBusy.current && !busy && fold) fold();
     runWasBusy.current = busy;
   });
-  const actionRunning = (a: MessageAction) => Boolean(running[a.runId]) || (started.current.has(a.runId) && a.status === "pending");
+  // A chat open in several tabs: a page action belongs to the tab that sent the message it answers.
+  // The others show it as in progress and never run it (no card, no auto-run, no highlight).
+  const elsewhere = useMemo(() => {
+    const sent = readSent();
+    const out = new Set<string>();
+    for (const m of thread.messages) {
+      const a = m.authorType === "ai" ? m.meta.action : undefined;
+      if (!a || a.status !== "pending") continue;
+      const seq = answersSeq(m.clientMsgId);
+      const asked = seq === null ? undefined : thread.messages.find((v) => v.seq === seq && v.authorType === "visitor");
+      // With the tab's record, only what it sent (a tab that sent nothing takes nothing). Without one
+      // (no consent yet, storage blocked): what this page sent, else the tab whose chat has focus.
+      const mine = !asked ? false : sent ? sent.includes(asked.clientMsgId) : memorySent.includes(asked.clientMsgId) || (document.visibilityState === "visible" && document.hasFocus());
+      if (!mine) out.add(a.runId);
+    }
+    return out;
+  }, [thread.messages]);
+  const actionRunning = (a: MessageAction) => Boolean(running[a.runId]) || elsewhere.has(a.runId) || (started.current.has(a.runId) && a.status === "pending");
+  // AI-32: the page shows the element a waiting click, typing or choice is about (a ring with "Click ·
+  // confirm in the chat"); the page-control chunk draws it. Sent only when it changes; none while it runs.
+  const pointAction = lastMessage?.authorType === "ai" ? lastMessage.meta.action : undefined;
+  const point = pointAction && !actionRunning(pointAction) ? pointOf(pointAction) : null;
+  const pointKey = point ? `${pointAction!.runId}` : "";
+  useEffect(() => {
+    postToHost({ type: "jun:point", point });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pointKey]);
   const actionResult = useRef(thread.actionResult);
   actionResult.current = thread.actionResult;
   useEffect(() => {
@@ -940,6 +1173,8 @@ function WidgetThread({
       const runId = data.runId;
       if (data.status === "undo_failed") setUndoErrors((s) => ({ ...s, [runId]: data.result || "Couldn't undo that." }));
       else if (data.status === "ok" || data.status === "error" || data.status === "gone" || data.status === "undone") {
+        // Still remembered (jun:runs) until the server's copy has it: a click that loads a new page can
+        // take this result down with the page; the next page then closes the step (below).
         setRunning((r) => {
           const { [runId]: _done, ...rest } = r;
           return rest;
@@ -978,11 +1213,14 @@ function WidgetThread({
         {...(action
           ? {
               controls: {
-                running: Boolean(running[action.runId]) || (started.current.has(action.runId) && action.status === "pending"),
+                running: actionRunning(action),
                 onInput: (input: Record<string, unknown>) => thread.actionInput(action.runId, input),
                 onRun: (input: Record<string, unknown>) => startAction(action, input),
                 onCancel: () => thread.actionResult(action.runId, "cancelled"),
                 onUndo: () => postToHost({ type: "jun:undo", runId: action.runId }),
+                // AI-32: page control can be allowed for good from its Confirm card, and asked again after.
+                ...(offerAllowAlways && isPageControl(action.name) && action.risk === "confirm" && !allowPage ? { onAllowAlways: () => allowAlways(true) } : {}),
+                ...(action.runId === lastPageStep ? { onAskFirst: () => allowAlways(false) } : {}),
                 ...(undoErrors[action.runId] ? { undoError: undoErrors[action.runId] } : {}),
               },
             }
@@ -1000,29 +1238,23 @@ function WidgetThread({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [first, conversationId]);
 
-  // W-04 bar: the chat panel shows once there's something in it; the frame sizes itself to fit.
   const hasChat = Boolean(conversationId || starting || opener || intent?.spec.opening || intent?.spec.exit);
-  const panel = Boolean(bar && open && hasChat);
-  const bottom = useRef<HTMLDivElement>(null);
-  const pill = useRef<HTMLDivElement>(null);
-  useBarFrame(Boolean(bar), bar?.side ?? "right", open, panel, bottom);
-  const setBarOpen = bar?.setOpen ?? island?.setOpen;
+  const setIslandOpen = island?.setOpen;
   const islandState = useIslandState({ island: Boolean(island), open, hasChat, conversationId, opener, intent, handling });
-  // The box takes focus when the bar or island opens (and again once a new chat's thread, or
-  // another island state, swaps the box in).
+  // The box takes focus when the island opens (and again once a new chat's thread, or another
+  // island state, swaps the box in).
   useEffect(() => {
-    if (setBarOpen && open) document.querySelector<HTMLTextAreaElement>(".b-pill textarea, .i-view textarea")?.focus();
-  }, [setBarOpen, open, islandState.state]);
-  // Esc folds the chat back into the bar or island; so does a click on the page while nothing's been asked.
-  const sticky = bar ? panel : hasChat;
+    if (setIslandOpen && open) document.querySelector<HTMLTextAreaElement>(".i-view textarea")?.focus();
+  }, [setIslandOpen, open, islandState.state]);
+  // Esc folds the chat back into the island; so does a click on the page while nothing's been asked.
   useEffect(() => {
-    if (!setBarOpen || !open) return;
+    if (!setIslandOpen || !open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setBarOpen(false);
+      if (e.key === "Escape") setIslandOpen(false);
     };
     // Not when a file picker or the screen-capture prompt took the focus.
     const onBlur = () => {
-      if (!sticky && !document.activeElement?.closest(".composer-plus")) setBarOpen(false);
+      if (!hasChat && !document.activeElement?.closest(".composer-plus")) setIslandOpen(false);
     };
     document.addEventListener("keydown", onKey);
     window.addEventListener("blur", onBlur);
@@ -1030,7 +1262,7 @@ function WidgetThread({
       document.removeEventListener("keydown", onKey);
       window.removeEventListener("blur", onBlur);
     };
-  }, [setBarOpen, open, sticky]);
+  }, [setIslandOpen, open, hasChat]);
 
   // "Contact the team": hand an AI conversation to the team, or start one asking for them.
   const sentHuman = useRef(false);
@@ -1122,12 +1354,6 @@ function WidgetThread({
   );
   const extras = (
     <>
-      {/* W-07: a person is always one click away while the AI is answering. */}
-      {bar && conversationId && handling === "ai" && (
-        <div className="w-human">
-          <button className="link small" onClick={() => thread.requestHuman()}>Talk to a person</button>
-        </div>
-      )}
       {/* W-12: rate a resolved conversation someone (the team or the AI) actually answered. */}
       {conversationId && summary && offersRating(csat, summary.status, thread.messages) && (
         <CsatAsk api={api} conversationId={conversationId} rated={summary.csat.ratedThisRound} onConversation={onConversation} />
@@ -1352,42 +1578,6 @@ function WidgetThread({
           </div>
         )}
       </Island>
-    );
-  }
-
-  if (bar) {
-    return (
-      <div className="b-root">
-        {panel && (
-          <main className="b-main">
-            <Glass />
-            <div className="b-panel">
-              {bar.head}
-              {exitBar}
-              <div className="b-tab">
-                <div className="b-log" role="log">
-                  {openerMessage}
-                  {messages}
-                  {error && <p className="error small b-pad">{error}</p>}
-                  {extras}
-                </div>
-              </div>
-            </div>
-          </main>
-        )}
-        <div className="b-bottom" ref={bottom}>
-          <div className="b-sizer">
-            {error && !panel && open && <p className="b-error" role="alert">{error}</p>}
-            {open && !hasChat && bar.suggestions.length > 0 && <Chips questions={bar.suggestions} onPick={(q) => void send(q, [])} />}
-            {/* Closed, the whole bar opens the chat (a click, or Tab into its box). */}
-            <div className={`b-pill ${open ? "open" : ""}`} ref={pill} onClick={open ? undefined : () => bar.setOpen(true)} onFocus={open ? undefined : () => bar.setOpen(true)}>
-              {composer}
-              {!open && <Typewriter phrases={bar.suggestions} fallback={placeholder} />}
-            </div>
-          </div>
-          <div className="b-notice" />
-        </div>
-      </div>
     );
   }
 

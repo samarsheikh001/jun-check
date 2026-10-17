@@ -15,11 +15,12 @@ import { SaveBar, routeFor, setCodeView, useCodeView } from "./parts.tsx";
 import { useAgentConfig, type AgentConfig } from "./useAgentConfig.ts";
 
 // The Agent page (AI-18). Plain views, one URL each, for the people who run support:
-//   /agent              Instructions: how the AI talks, when it hands over (AGENTS.md)
-//   /agent/tasks        tasks: when, steps and the actions they use (skills/*/SKILL.md; AI-27)
-//   /agent/actions      requests to your systems (tools/*.yaml)
+//   /agent              Instructions: how the AI talks, when it hands over (instructions.md)
+//   /agent/tasks        tasks: when, steps and the actions they use (tasks/*.md; AI-27)
+//   /agent/actions      requests to your systems (actions/*.yaml)
 //   /agent/widgets      how an action's result is shown (widgets/*.widget)
-//   /agent/tests        test cases and "Run tests" (evals/*.yaml)
+//   /agent/tests        test cases and "Run tests" (tests/*.yaml)
+//   /agent/desk.yaml    Instructions' Code view at desk.yaml, the desk's settings (D-84)
 // Each page has a Form / Code switch (remembered, not in the URL): Code shows the same item's file as
 // text, exactly as `jun pull` / `jun push` see it. Every view edits one shared draft; one save makes
 // it a new version.
@@ -52,7 +53,11 @@ export function movedFromAgentCode(path: string): string | null {
   if (/^\/agent\/settings\/?$/.test(path)) return "/settings/ai";
   if (!/^\/agent\/code(\/|$)/.test(path)) return null;
   setCodeView(true, true);
-  const file = decodeURIComponent(path.slice("/agent/code/".length));
+  // D-83: these links can name a file by its path from before the rename.
+  const file = decodeURIComponent(path.slice("/agent/code/".length))
+    .replace(/^skills\/([^/]+)\/SKILL\.md$/, "tasks/$1.md")
+    .replace(/^tools\//, "actions/")
+    .replace(/^evals\//, "tests/");
   return file ? routeFor(file) : "/agent";
 }
 
@@ -74,6 +79,8 @@ export function AgentPage({ workspaceId, canEdit, path }: { workspaceId: string;
   const [, , , ...rest] = path.split("/");
   const tab = agentSection(path);
   const item = rest.length ? decodeURIComponent(rest.join("/")) : null;
+  // D-84: /agent/desk.yaml opens Instructions' Code view at that file.
+  const file = tab === "instructions" ? (path.split("/")[2] || null) : null;
 
   const view = (content: React.ReactNode) =>
     cfg.state ? (
@@ -109,7 +116,7 @@ export function AgentPage({ workspaceId, canEdit, path }: { workspaceId: string;
           </>
         }
         tabs={[
-          { value: "instructions", label: "Instructions", path: "/agent", content: view(<InstructionsView cfg={cfg} canEdit={canEdit} workspaceId={workspaceId} />) },
+          { value: "instructions", label: "Instructions", path: "/agent", content: view(<InstructionsView cfg={cfg} canEdit={canEdit} workspaceId={workspaceId} file={file} />) },
           { value: "tasks", label: "Tasks", path: "/agent/tasks", content: view(<TasksView cfg={cfg} canEdit={canEdit} selected={tab === "tasks" ? item : null} />) },
           { value: "actions", label: "Actions", path: "/agent/actions", content: view(<ActionsView cfg={cfg} canEdit={canEdit} selected={tab === "actions" ? item : null} />) },
           { value: "widgets", label: "Widgets", path: "/agent/widgets", content: view(<WidgetsView cfg={cfg} canEdit={canEdit} selected={tab === "widgets" ? item : null} />) },
@@ -144,7 +151,13 @@ function HistorySheet({ cfg, canEdit, open, onClose }: { cfg: AgentConfig; canEd
                   )}
                 </div>
                 <div>{v.message || <span className="muted">No note</span>}</div>
-                <div className="muted">{v.source === "cli" ? "Pushed from git" : "Saved"} by {v.createdBy ?? "someone"} · {ago(v.createdAt)}</div>
+                {v.changed && v.changed.length > 0 && (
+                  <div className="muted agent-version-files">
+                    Changed {v.changed.slice(0, 4).map((p, i) => <span key={p}>{i > 0 && ", "}<code>{p}</code></span>)}
+                    {v.changed.length > 4 && ` and ${v.changed.length - 4} more`}
+                  </div>
+                )}
+                <div className="muted">{v.source === "cli" ? "Pushed from git" : v.source === "mcp" ? "Changed by an AI (MCP)" : "Saved"} by {v.createdBy ?? "someone"} · {ago(v.createdAt)}</div>
               </li>
             ))}
           </ul>
