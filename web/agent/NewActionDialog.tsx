@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { stringify } from "yaml";
 import { describeError } from "../api.ts";
-import { looksLikeCurl, parseCurl, type CurlRequest } from "../../shared/curl.ts";
+import { curlActionFile, looksLikeCurl, parseCurl, type CurlRequest } from "../../shared/curl.ts";
 import { actionName } from "../../shared/action-try.ts";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
@@ -27,17 +26,7 @@ const MAX_HOW = 1500;
 const RESERVED = ["handoff", "flag_problem", "jun_done", "activate_skill", "show_widget"];
 
 /** The new action's file from a curl command (the AI fills in the description and status). */
-export function actionFile(req: CurlRequest): string {
-  return stringify({
-    description: "",
-    status: "Working on it",
-    method: req.method,
-    url: req.url,
-    ...(Object.keys(req.query).length ? { query: req.query } : {}),
-    ...(Object.keys(req.headers).length ? { headers: req.headers } : {}),
-    ...(req.body !== undefined ? { body: req.body } : {}),
-  });
-}
+export const actionFile = (req: CurlRequest): string => curlActionFile(req);
 
 /** The action AI's first request. */
 function firstAsk(what: string, how: string, curl: CurlRequest | null): string {
@@ -124,7 +113,7 @@ export function NewActionDialog({ open, onClose, cfg, keys, names, initial }: {
     setBusy(true);
     setError(null);
     try {
-      const path = `tools/${fileName}.yaml`;
+      const path = `actions/${fileName}.yaml`;
       if (req) await addCurlAction(cfg, keys, path, req);
       else cfg.setFile(path, `description: ""\nstatus: Working on it\nmethod: GET\nurl: https://\n`);
       askOnOpen(path, firstAsk(what.trim(), req ? "" : how.trim(), req));
