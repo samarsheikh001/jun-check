@@ -36,19 +36,21 @@ const NAVIGATION: { label: string; path: string; hint?: string }[] = [
   { label: "Agent: Actions", path: "/agent/actions" },
   { label: "Agent: Widgets", path: "/agent/widgets" },
   { label: "Agent: Tests", path: "/agent/tests" },
-  { label: "Chat widget", path: "/appearance" },
+  { label: "Chat widget", path: "/appearance/install" },
+  { label: "Appearance", path: "/appearance" },
   { label: "Settings", path: "/settings", hint: "g s" },
 ];
 /**
  * Settings sections, found by their heading where they live (so they need no ids): the settings
- * dialog's sections, the Widget page's Install tab and the Agent page's Settings tab.
+ * dialog's sections, the Chat widget page's Install and Behaviour tabs and the Agent page's Settings tab.
  */
 const SETTINGS_SECTIONS: { heading: string; path: string; area?: string }[] = [
   { heading: "General", path: "/settings/general" },
   { heading: "Install the chat widget", path: "/appearance/install", area: "Chat widget" },
-  { heading: "Allowed websites", path: "/appearance/install", area: "Chat widget" },
-  { heading: "Proactive help", path: "/appearance/install", area: "Chat widget" },
-  { heading: "Identify signed-in customers", path: "/appearance/install", area: "Chat widget" },
+  { heading: "Where to paste it", path: "/appearance/install", area: "Chat widget" },
+  { heading: "Allowed websites", path: "/appearance/behaviour", area: "Chat widget" },
+  { heading: "Proactive help", path: "/appearance/behaviour", area: "Chat widget" },
+  { heading: "Identify signed-in customers", path: "/appearance/behaviour", area: "Chat widget" },
   { heading: "AI replies", path: "/settings/ai" },
   { heading: "Assignment", path: "/settings/inbox" },
   { heading: "Business hours", path: "/settings/inbox" },
