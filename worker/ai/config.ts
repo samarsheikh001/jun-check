@@ -4,17 +4,22 @@ import { INTENT_NAME, MAX_INTENT_EXIT, MAX_INTENT_OPENING, MAX_INTENT_REPLIES, M
 import { DONE_TOOL } from "../../shared/actions.ts";
 import { checkExamples, parseWidgetFile, renderSummary, renderWidget, SHOW_WIDGET_TOOL, TOOL_ACTION, widgetActions, type WidgetSpec } from "../../shared/widgets.ts";
 import { FLAG_TOOL, HANDOFF_TOOL } from "./agent.ts";
+import { DESK_PATH, parseDeskFile, type DeskFile } from "./desk-file.ts";
 
-/** The agent's own tools: a tools/<name>.yaml can't take their names. */
+/** The agent's own tools: an actions/<name>.yaml can't take their names. */
 const BUILT_IN_TOOLS = new Set([HANDOFF_TOOL, FLAG_TOOL, DONE_TOOL, SHOW_WIDGET_TOOL, "activate_skill"]);
 
 // Support agent as code (AI-18). A config is a set of text files, the same in git and in the desk:
-//   AGENTS.md                 persona, tone, rules; optional frontmatter guardrails
-//   skills/<name>/SKILL.md    procedures (Agent Skills format: name + description frontmatter;
+//   instructions.md           persona, tone, rules; optional frontmatter guardrails (D-85: was AGENTS.md)
+//   tasks/<name>.md           procedures (description frontmatter; `name`, if given, is the file name;
 //                             optional intent/opening/replies/exit for AI-20 intent-launched chats)
-//   tools/<name>.yaml         HTTP lookups the AI may call (AI-05)
-//   evals/<name>.yaml         test cases for `jun eval` (AI-19)
+//   actions/<name>.yaml       HTTP lookups the AI may call (AI-05)
+//   tests/<name>.yaml         test cases for `jun eval` (AI-19)
 //   widgets/<name>.widget     cards a tool's result is shown as (W-09: ChatKit Studio's export)
+//   website-actions.yaml      how each action on the customer's website runs (D-74)
+//   desk.yaml                 the desk's settings: AI switches, chat widget, hours, assignment (D-84)
+// `jun pull` also writes AGENTS.md, CLAUDE.md and README.md: a guide for coding AIs and people, never
+// config (D-85, `GUIDE_PATHS`).
 // Parsing is pure so the Worker, tests and the eval runner share it.
 
 export const MAX_CONFIG_FILES = 200;
@@ -98,7 +103,7 @@ export interface EvalCase {
 export interface AgentConfig {
   /** Saved version, or null for the built-in default. */
   version: number | null;
-  /** AGENTS.md without frontmatter. */
+  /** instructions.md without frontmatter. */
   persona: string;
   maxReplies: number;
   /** Topics the AI must always hand to a person. */
@@ -112,6 +117,8 @@ export interface AgentConfig {
   websiteActionRisk: Record<string, "auto" | "confirm" | "human">;
   /** D-77: website-actions.yaml: the line the customer sees while each one runs (`status:`). */
   websiteActionStatus: Record<string, string>;
+  /** D-84: desk.yaml's settings (only the keys it has), applied to the desk when a config is saved. */
+  desk?: DeskFile;
 }
 
 /**
@@ -154,7 +161,10 @@ export interface ConfigIssue {
 
 export type ConfigFiles = Record<string, string>;
 
-export const DEFAULT_AGENTS_MD = `---
+/** D-85: the support AI's persona file (AGENTS.md before; coding AIs read that name as their own instructions). */
+export const INSTRUCTIONS_PATH = "instructions.md";
+
+export const DEFAULT_INSTRUCTIONS_MD = `---
 # Guardrails. Remove a line to use the default.
 maxReplies: 8            # AI replies per conversation before a person takes over
 handoffTopics:           # always hand these to a person
@@ -167,15 +177,15 @@ handoffTopics:           # always hand these to a person
 - Don't promise refunds, credits, discounts or timelines unless a procedure says you can.
 `;
 
-/** The config a workspace starts with: the old Settings guidance (if any) becomes AGENTS.md. */
+/** The config a workspace starts with: the old Settings guidance (if any) becomes instructions.md. */
 export function defaultFiles(instructions = ""): ConfigFiles {
   const extra = instructions.trim() ? `\n# Guidance from the team\n\n${instructions.trim()}\n` : "";
-  return { "AGENTS.md": DEFAULT_AGENTS_MD + extra };
+  return { [INSTRUCTIONS_PATH]: DEFAULT_INSTRUCTIONS_MD + extra };
 }
 
-const SKILL_PATH = /^skills\/([a-z0-9]+(?:-[a-z0-9]+)*)\/SKILL\.md$/;
-const TOOL_PATH = /^tools\/([a-z][a-z0-9_]*)\.ya?ml$/;
-const EVAL_PATH = /^evals\/([a-zA-Z0-9_-]+)\.ya?ml$/;
+const TASK_PATH = /^tasks\/([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
+const TOOL_PATH = /^actions\/([a-z][a-z0-9_]*)\.ya?ml$/;
+const EVAL_PATH = /^tests\/([a-zA-Z0-9_-]+)\.ya?ml$/;
 const WIDGET_PATH = /^widgets\/([a-z][a-z0-9_-]*)\.widget$/;
 /** D-74 / D-77: how each action on the customer's website runs, and its line, set on the desk. */
 export const WEBSITE_ACTIONS_PATH = "website-actions.yaml";
@@ -184,7 +194,46 @@ export const MAX_WIDGETS = 20;
 const PLACEHOLDER = /\{([a-zA-Z_][a-zA-Z0-9_.]*)\}/g;
 
 export function isConfigPath(path: string): boolean {
-  return path === "AGENTS.md" || path === "README.md" || path === WEBSITE_ACTIONS_PATH || SKILL_PATH.test(path) || TOOL_PATH.test(path) || EVAL_PATH.test(path) || WIDGET_PATH.test(path);
+  return path === INSTRUCTIONS_PATH || path === WEBSITE_ACTIONS_PATH || path === DESK_PATH || TASK_PATH.test(path) || TOOL_PATH.test(path) || EVAL_PATH.test(path) || WIDGET_PATH.test(path);
+}
+
+// D-83: the layout before the rename (skills/<name>/SKILL.md, tools/, evals/) → the current one.
+const OLD_PATHS: [RegExp, string][] = [
+  [/^skills\/([^/]+)\/SKILL\.md$/, "tasks/$1.md"],
+  [/^tools\/([^/]+\.ya?ml)$/, "actions/$1"],
+  [/^evals\/([^/]+\.ya?ml)$/, "tests/$1"],
+];
+
+/**
+ * D-85: files `jun pull` writes beside the config for people and coding AIs (README.md, AGENTS.md: a
+ * guide to the format; CLAUDE.md: `@AGENTS.md`). They're never config: not sent by push, not stored.
+ */
+export const GUIDE_PATHS = ["AGENTS.md", "CLAUDE.md", "README.md"];
+/** D-85: the first line of the generated guide files, so a guide is never read as a persona. */
+export const GUIDE_MARKER = "<!-- Generated by `jun pull`";
+
+/**
+ * Compatibility for configs saved before a rename (versions in D1, an old folder sent by `jun push`):
+ * - D-83: skills/<name>/SKILL.md, tools/, evals/ move to tasks/<name>.md, actions/, tests/. A file
+ *   already at the new path wins.
+ * - D-85: AGENTS.md was the persona. With no instructions.md it's the old persona and moves there
+ *   (unless it's the generated guide); with one, it's the coding-AI guide and is dropped.
+ * - D-85: the guide files (README.md, AGENTS.md, CLAUDE.md) aren't config: dropped. Versions saved
+ *   with a README.md read without it.
+ */
+export function withCurrentPaths(files: ConfigFiles): ConfigFiles {
+  const out: ConfigFiles = {};
+  const moved: [string, string][] = [];
+  const persona = files["AGENTS.md"];
+  if (persona !== undefined && !(INSTRUCTIONS_PATH in files) && !persona.trimStart().startsWith(GUIDE_MARKER)) moved.push([INSTRUCTIONS_PATH, persona]);
+  for (const [path, text] of Object.entries(files)) {
+    if (GUIDE_PATHS.includes(path)) continue;
+    const old = OLD_PATHS.find(([re]) => re.test(path));
+    if (old) moved.push([path.replace(old[0], old[1]), text]);
+    else out[path] = text;
+  }
+  for (const [path, text] of moved) if (!(path in out)) out[path] = text;
+  return out;
 }
 
 /** Splits `---\nyaml\n---\nbody`. Returns null frontmatter when there is none. */
@@ -228,36 +277,36 @@ function stringMap(path: string, value: unknown, field: string, issues: ConfigIs
   return out;
 }
 
-function parseAgentsMd(text: string, issues: ConfigIssue[]): Pick<AgentConfig, "persona" | "maxReplies" | "handoffTopics"> {
+function parseInstructions(text: string, issues: ConfigIssue[]): Pick<AgentConfig, "persona" | "maxReplies" | "handoffTopics"> {
   const { frontmatter, body } = splitFrontmatter(text);
   const out = { persona: body.trim(), maxReplies: DEFAULT_MAX_REPLIES, handoffTopics: [] as string[] };
   if (frontmatter === null) return out;
-  const data = yaml("AGENTS.md", frontmatter, issues);
+  const data = yaml(INSTRUCTIONS_PATH, frontmatter, issues);
   if (data === undefined) return out;
   if (!isRecord(data)) {
-    issues.push({ path: "AGENTS.md", message: "Frontmatter must be a YAML map." });
+    issues.push({ path: INSTRUCTIONS_PATH, message: "Frontmatter must be a YAML map." });
     return out;
   }
-  unknownKeys("AGENTS.md", data, ["maxReplies", "handoffTopics"], issues);
+  unknownKeys(INSTRUCTIONS_PATH, data, ["maxReplies", "handoffTopics"], issues);
   if (data.maxReplies !== undefined) {
     const n = data.maxReplies;
     if (typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 50) out.maxReplies = n;
-    else issues.push({ path: "AGENTS.md", message: "maxReplies must be a whole number from 1 to 50." });
+    else issues.push({ path: INSTRUCTIONS_PATH, message: "maxReplies must be a whole number from 1 to 50." });
   }
   if (data.handoffTopics !== undefined) {
     if (Array.isArray(data.handoffTopics) && data.handoffTopics.every((t) => typeof t === "string" && t.trim())) {
       out.handoffTopics = (data.handoffTopics as string[]).map((t) => t.trim()).slice(0, 30);
     } else {
-      issues.push({ path: "AGENTS.md", message: "handoffTopics must be a list of short descriptions." });
+      issues.push({ path: INSTRUCTIONS_PATH, message: "handoffTopics must be a list of short descriptions." });
     }
   }
   return out;
 }
 
-function parseSkill(path: string, folder: string, text: string, issues: ConfigIssue[]): Skill | null {
+function parseSkill(path: string, file: string, text: string, issues: ConfigIssue[]): Skill | null {
   const { frontmatter, body } = splitFrontmatter(text);
   if (frontmatter === null) {
-    issues.push({ path, message: "SKILL.md needs frontmatter with name and description (---\\nname: …\\ndescription: …\\n---)." });
+    issues.push({ path, message: "A task needs frontmatter with a description (---\\ndescription: …\\n---)." });
     return null;
   }
   const data = yaml(path, frontmatter, issues);
@@ -265,16 +314,17 @@ function parseSkill(path: string, folder: string, text: string, issues: ConfigIs
     if (data !== undefined) issues.push({ path, message: "Frontmatter must be a YAML map." });
     return null;
   }
-  // Agent Skills fields we don't use (license, metadata, …) are allowed and ignored.
-  const name = typeof data.name === "string" ? data.name.trim() : "";
+  // The task's name is its file name; `name`, if given, must match it. Other fields we don't use
+  // (license, metadata, …) are allowed and ignored.
+  const name = data.name === undefined ? file : typeof data.name === "string" ? data.name.trim() : "";
   const description = typeof data.description === "string" ? data.description.trim() : "";
-  if (name !== folder) issues.push({ path, message: `name must match the folder name ("${folder}").` });
+  if (name !== file) issues.push({ path, message: `name must match the file name ("${file}"), or leave it out.` });
   if (!description) issues.push({ path, message: "description is required: say when this procedure applies." });
   else if (description.length > 1024) issues.push({ path, message: "description must be at most 1024 characters." });
   if (!body.trim()) issues.push({ path, message: "The procedure itself (below the frontmatter) is empty." });
   const before = issues.length;
   const intent = parseIntent(path, data, issues);
-  if (name !== folder || !description || description.length > 1024 || !body.trim() || issues.length > before) return null;
+  if (name !== file || !description || description.length > 1024 || !body.trim() || issues.length > before) return null;
   return { name, description, instructions: body.trim(), ...(intent ? { intent } : {}) };
 }
 
@@ -595,11 +645,11 @@ export function parseConfig(files: ConfigFiles, version: number | null = null): 
   if (paths.length > MAX_CONFIG_FILES) issues.push({ path: "", message: `At most ${MAX_CONFIG_FILES} files.` });
   const bytes = paths.reduce((n, p) => n + new TextEncoder().encode(files[p]!).length, 0);
   if (bytes > MAX_CONFIG_BYTES) issues.push({ path: "", message: `Config is ${Math.round(bytes / 1024)} KB; the limit is ${MAX_CONFIG_BYTES / 1024} KB.` });
-  if (!("AGENTS.md" in files)) issues.push({ path: "AGENTS.md", message: "AGENTS.md is required (persona and rules)." });
+  if (!(INSTRUCTIONS_PATH in files)) issues.push({ path: INSTRUCTIONS_PATH, message: "instructions.md is required (persona and rules)." });
 
   const config: AgentConfig = {
     version,
-    ...parseAgentsMd(files["AGENTS.md"] ?? "", issues),
+    ...parseInstructions(files[INSTRUCTIONS_PATH] ?? "", issues),
     skills: [],
     tools: [],
     evals: [],
@@ -610,28 +660,33 @@ export function parseConfig(files: ConfigFiles, version: number | null = null): 
   for (const path of paths) {
     const text = files[path]!;
     let m: RegExpExecArray | null;
-    if (path === "AGENTS.md" || path === "README.md") continue;
+    // D-85: the guide files aren't config (withCurrentPaths drops them; a draft may still carry one).
+    if (path === INSTRUCTIONS_PATH || GUIDE_PATHS.includes(path)) continue;
+    if (path === DESK_PATH) {
+      config.desk = parseDeskFile(text, issues);
+      continue;
+    }
     if (path === WEBSITE_ACTIONS_PATH) {
       const parsed = parseWebsiteActions(path, text, issues);
       config.websiteActionRisk = parsed.risk;
       config.websiteActionStatus = parsed.status;
       continue;
     }
-    if ((m = SKILL_PATH.exec(path))) {
+    if ((m = TASK_PATH.exec(path))) {
       const skill = parseSkill(path, m[1]!, text, issues);
       const taken = skill?.intent && config.skills.find((s) => s.intent?.name === skill.intent!.name);
       if (taken) {
-        issues.push({ path, message: `Intent "${skill!.intent!.name}" is already defined by skills/${taken.name}/SKILL.md (one skill per intent).` });
+        issues.push({ path, message: `Intent "${skill!.intent!.name}" is already defined by tasks/${taken.name}.md (one task per intent).` });
         continue;
       }
       if (skill) config.skills.push(skill);
     } else if ((m = TOOL_PATH.exec(path))) {
       if (BUILT_IN_TOOLS.has(m[1]!)) {
-        issues.push({ path, message: `"${m[1]}" is a built-in tool name: rename this file.` });
+        issues.push({ path, message: `"${m[1]}" is a built-in action name: rename this file.` });
         continue;
       }
       if (config.tools.some((t) => t.name === m![1])) {
-        issues.push({ path, message: `Duplicate tool "${m[1]}" (.yaml and .yml).` });
+        issues.push({ path, message: `Duplicate action "${m[1]}" (.yaml and .yml).` });
         continue;
       }
       const tool = parseTool(path, m[1]!, text, issues);
@@ -644,15 +699,15 @@ export function parseConfig(files: ConfigFiles, version: number | null = null): 
     } else {
       issues.push({
         path,
-        message: "Unknown file. Allowed: AGENTS.md, README.md, website-actions.yaml, skills/<name>/SKILL.md, tools/<name>.yaml, evals/<name>.yaml, widgets/<name>.widget (lowercase names).",
+        message: "Unknown file. Allowed: instructions.md, desk.yaml, website-actions.yaml, tasks/<name>.md, actions/<name>.yaml, tests/<name>.yaml, widgets/<name>.widget (lowercase names).",
       });
     }
   }
-  if (config.tools.length > 20) issues.push({ path: "tools/", message: "At most 20 tools." });
+  if (config.tools.length > 20) issues.push({ path: "actions/", message: "At most 20 actions." });
   if (config.widgets.length > MAX_WIDGETS) issues.push({ path: "widgets/", message: `At most ${MAX_WIDGETS} widgets.` });
   for (const tool of config.tools) {
     if (tool.widget && !config.widgets.some((w) => w.name === tool.widget)) {
-      const file = paths.find((p) => TOOL_PATH.exec(p)?.[1] === tool.name) ?? `tools/${tool.name}.yaml`;
+      const file = paths.find((p) => TOOL_PATH.exec(p)?.[1] === tool.name) ?? `actions/${tool.name}.yaml`;
       issues.push({ path: file, message: `widget: there's no widgets/${tool.widget}.widget.` });
       delete tool.widget;
     }
@@ -677,7 +732,7 @@ export function parseConfig(files: ConfigFiles, version: number | null = null): 
     }
     for (const type of new Set(actions)) {
       const name = TOOL_ACTION.exec(type)?.[1];
-      if (name && !config.tools.some((t) => t.name === name)) issues.push({ path: `widgets/${widget.name}.widget`, message: `${type}: there's no tools/${name}.yaml.` });
+      if (name && !config.tools.some((t) => t.name === name)) issues.push({ path: `widgets/${widget.name}.widget`, message: `${type}: there's no actions/${name}.yaml.` });
     }
   }
   return { config, issues };
@@ -731,4 +786,29 @@ export function fillTemplate(
     const value = input[ref];
     return value === undefined || value === null ? "" : encode(String(value));
   });
+}
+
+/** The files that differ between two configs (added, removed or edited), sorted. */
+export function changedPaths(before: ConfigFiles, after: ConfigFiles): string[] {
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((p) => before[p] !== after[p]).sort();
+}
+
+/**
+ * D-84: a save that started from an older version than the latest. When the files changed since
+ * (base → latest) and the files the draft changed (base → draft) don't overlap, the result is the
+ * latest with the draft's changes on top; when they overlap, null (a real conflict). `only`: the
+ * latest's changes must all be among these files, or it's a conflict too (CLI pushes merge only
+ * the settings pages' desk.yaml; git stays their source of truth for the rest).
+ */
+export function mergeConfigs(base: ConfigFiles, latest: ConfigFiles, draft: ConfigFiles, only?: string[]): ConfigFiles | null {
+  const theirs = changedPaths(base, latest);
+  const mine = changedPaths(base, draft);
+  if (only && theirs.some((p) => !only.includes(p))) return null;
+  if (mine.some((p) => theirs.includes(p))) return null;
+  const merged: ConfigFiles = { ...latest };
+  for (const path of mine) {
+    if (draft[path] === undefined) delete merged[path];
+    else merged[path] = draft[path]!;
+  }
+  return merged;
 }
