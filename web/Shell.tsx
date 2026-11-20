@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowUpIcon, BookOpenIcon, BotIcon, ChartColumnIcon, ChatIcon, FlashIcon, HelpIcon, InboxIcon, SearchIcon, SettingsIcon, SignOutIcon, UsersIcon } from "@/components/icons";
+import { ArrowUpIcon, BookOpenIcon, BotIcon, ChartColumnIcon, ChatIcon, PaletteIcon, FlashIcon, HelpIcon, InboxIcon, SearchIcon, SettingsIcon, SignOutIcon, UsersIcon } from "@/components/icons";
 import { knownUpdate, UPDATE_HELP, useUpdate, type LatestRelease } from "./lib/updates.ts";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from "@/components/ui/dropdown-menu.tsx";
 import { ScrollArea } from "@/components/ui/scroll-area.tsx";
@@ -13,7 +13,7 @@ import { ThemeButton } from "./components/ThemeButton.tsx";
 import type { HubClientEvent, HubEvent, LiveVisitor, PresenceEntry } from "../shared/protocol.ts";
 import { api, type Me } from "./api.ts";
 import { InboxPage } from "./inbox/InboxPage.tsx";
-import { WidgetPage } from "./appearance/AppearancePage.tsx";
+import { AppearancePage, WidgetPage, type WidgetTab } from "./appearance/AppearancePage.tsx";
 import { AGENT_SECTIONS, AgentPage, agentSection, movedFromAgentCode } from "./agent/AgentPage.tsx";
 import { CommandPalette, ShortcutsHelp } from "./components/CommandPalette.tsx";
 import { bridge, isControlTarget, isTypingTarget, modKey } from "./lib/bridge.ts";
@@ -36,13 +36,16 @@ const NAV = [
   { id: "visitors", label: "Visitors", Icon: UsersIcon },
   { id: "knowledge", label: "Knowledge", Icon: BookOpenIcon },
   { id: "agent", label: "Agent", Icon: BotIcon },
-  { id: "appearance", label: "Chat widget", Icon: ChatIcon },
+  // Chat widget (Install, Behaviour) and Appearance (the look) share /appearance* (old links keep working).
+  { id: "widget", label: "Chat widget", Icon: ChatIcon, href: "/appearance/install" },
+  { id: "appearance", label: "Appearance", Icon: PaletteIcon, href: "/appearance" },
 ] as const;
 
 /** Which sidebar entry a path belongs to. */
 function sectionOf(pagePath: string) {
   return pagePath.startsWith("/knowledge") ? "knowledge"
     : pagePath.startsWith("/agent") ? "agent"
+    : pagePath.startsWith("/appearance/install") || pagePath.startsWith("/appearance/behaviour") ? "widget"
     : pagePath.startsWith("/appearance") ? "appearance"
     : pagePath.startsWith("/visitors") ? "visitors"
     : pagePath.startsWith("/dashboard") || pagePath.startsWith("/reports") ? "dashboard"
@@ -369,6 +372,10 @@ export function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
   const showGetStarted = Boolean(ob && !ob.dismissed && obDone < STEP_ORDER.length && workspace.role !== "agent");
   const canEdit = workspace.role !== "agent";
   const conversationId = pagePath.match(/^\/inbox\/([\w-]+)/)?.[1] ?? null;
+  // D-91: until the widget is on a site, its sidebar entry carries a dot and opens on Install.
+  const install = ob ? { installed: ob.steps.install, host: ob.installedOn, widgetKey: ob.widgetKey } : null;
+  const notInstalled = install !== null && !install.installed;
+  const widgetTab: WidgetTab = pagePath.startsWith("/appearance/behaviour") ? "behaviour" : "install";
 
   return (
     // Town's sidebar (D-36): shadcn's Sidebar, collapsing to a 56px icon rail (toggle, or Ctrl/Cmd+B).
@@ -382,16 +389,21 @@ export function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
         <SidebarContent>
           <SidebarGroup>
             <SidebarMenu aria-label="Main">
-              {NAV.map(({ id, label, Icon }) => (
+              {NAV.map((item) => {
+                const { id, label, Icon } = item;
+                const dot = id === "widget" && notInstalled;
+                const href = "href" in item ? item.href : `/${id}`;
+                return (
                 <SidebarMenuItem key={id}>
                   <SidebarMenuButton
                     isActive={section === id && !settingsOpen}
-                    tooltip={label}
-                    render={<a href={`/${id}`} aria-current={section === id && !settingsOpen ? "page" : undefined} onClick={(e) => { e.preventDefault(); navigate(`/${id}`); }} />}
+                    tooltip={dot ? `${label} (not installed yet)` : label}
+                    render={<a href={href} aria-current={section === id && !settingsOpen ? "page" : undefined} onClick={(e) => { e.preventDefault(); navigate(href); }} />}
                   >
                     <Icon />
-                    <span>{label}</span>
+                    <span>{label}{dot && <span className="sr-only">, not installed yet</span>}</span>
                   </SidebarMenuButton>
+                  {dot && <span className="nav-dot" aria-hidden="true" />}
                   {id === "visitors" && visitors && visitors.length > 0 && <SidebarMenuBadge className="nav-count">{visitors.length}</SidebarMenuBadge>}
                   {/* The Agent's parts open under it while you're there (Chatbase's "Build"); the icon rail shows only Agent. */}
                   {id === "agent" && section === "agent" && !settingsOpen && (
@@ -415,7 +427,8 @@ export function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
                     </SidebarMenuSub>
                   )}
                 </SidebarMenuItem>
-              ))}
+                );
+              })}
             </SidebarMenu>
           </SidebarGroup>
         </SidebarContent>
@@ -509,8 +522,10 @@ export function Shell({ me, onSignOut }: { me: Me; onSignOut: () => void }) {
         <VisitorsPage workspaceId={workspace.workspaceId} visitors={visitors} />
       ) : section === "dashboard" ? (
         <ReportsPage workspaceId={workspace.workspaceId} />
+      ) : section === "widget" ? (
+        <WidgetPage workspaceId={workspace.workspaceId} canEdit={canEdit} tab={widgetTab} install={install} reloadInstall={reloadOnboarding} />
       ) : section === "appearance" ? (
-        <WidgetPage workspaceId={workspace.workspaceId} workspaceName={workspace.workspaceName} canEdit={canEdit} tab={pagePath.startsWith("/appearance/install") ? "install" : "look"} />
+        <AppearancePage workspaceId={workspace.workspaceId} workspaceName={workspace.workspaceName} canEdit={canEdit} />
       ) : section === "agent" ? (
         <AgentPage workspaceId={workspace.workspaceId} canEdit={canEdit} path={pagePath} />
       ) : (
