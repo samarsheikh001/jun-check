@@ -9,18 +9,23 @@
  * the visitor sends a message. data-capture="off" disables capture. Shows the visitor on the
  * desk's live visitor list (data-consent="required"
  * waits for JunDesk.consent(true) and stores nothing before it).
+ * Page control (AI-32): with "Let the AI use your website" on (desk: Chat widget → Behaviour) the AI may read
+ * this page and click, type and choose on it, with the
+ * visitor's Confirm for changes; never inside [data-jun-private] or password/card fields (widget-page-control.js).
  * API: window.JunDesk.open() / .close() / .toggle() / .identify(jwt) / .logout() / .consent(bool) / .registerAction(tool)
+ *      / .setTheme("light" | "dark" | "auto" | null): follow the site's own dark mode (D-92); null goes back to
+ *      the desk's setting. data-theme="dark" on this tag sets it from the first paint.
  * Card actions with ChatKit's handler: "client" (D-51) come to the page, never to the server:
  *   JunDesk.onWidgetAction(function (a) { a.type; a.payload; a.values; a.widget; }) (returns a remover),
  *   or the "jundesk:widget-action" window event (same object as event.detail).
- *      / .reportError({ message, code? }). With the island launcher, "/" on the page opens it.
+ *      / .reportError({ message, code? }). In island mode, "/" on the page opens it.
  * identify() takes a JWT your backend signs with the desk's identity secret (data-user-token works too).
  * reportError() tells support what failed in your app's own words ("Row 42: missing email"); masked
  * like everything else and kept in memory with the errors above.
  * Intents (AI-20): JunDesk.open({ intent: "cancel", onExit: function () { location.href = "/billing/cancel"; } })
- * opens a chat for a purpose. A skill in your agent config defines the intent (skills/<name>/SKILL.md
+ * opens a chat for a purpose. A task in your agent config defines the intent (tasks/<name>.md
  * frontmatter: intent, opening, replies, exit): the chat starts with its opening line and quick
- * replies, and the AI follows that skill. If it has an exit ("Cancel anyway"), that button stays
+ * replies, and the AI follows that task. If it has an exit ("Cancel anyway"), that button stays
  * visible for the whole chat; one click closes the chat and calls onExit(), where your app goes on
  * (e.g. to its own cancel screen). An intent with an exit but no onExit function opens a plain chat
  * instead (with a console warning): the flow never starts without a way out. Names: [a-z0-9_-], max 40
@@ -33,6 +38,8 @@
   if (!key) return console.warn("Jun: no data-key");
   var origin = new URL(script.src).origin;
   var color = script.getAttribute("data-color"); // overrides the desk's branding colour
+  // D-92: the site's theme (data-theme, JunDesk.setTheme) wins over the desk's; deskTheme is that.
+  var themes = /^(light|dark|auto)$/, theme = themes.test(script.getAttribute("data-theme")) ? script.getAttribute("data-theme") : null, deskTheme, pageControl;
 
   // ---------- debug capture (P1). Same masking rules as shared/debug.ts. ----------
   var events = [];
@@ -213,6 +220,7 @@
   }
   function connect() {
     if (!consented || live) return;
+    if (pageControl) chunk("page-control");
     sid = sid || store("jun:s") || store("jun:s", rid()) || rid();
     started = started || Number(store("jun:t") || store("jun:t", Date.now())) || Date.now();
     var ws = live = new WebSocket(origin.replace(/^http/, "ws") + "/api/widget/" + encodeURIComponent(key) + "/live?s=" + sid);
@@ -285,13 +293,17 @@
     ".nudge{padding:16px 18px;font:14px/1.6 Arial,sans-serif}" +
     // Left side (W-04); the full-screen frame on phones wins over it (same specificity, later).
     ".left>*{right:auto;left:22px}" +
+    // Opening: the chat grows in from its corner (not the island or the greeting card, which morph themselves).
+    ".o{animation:jo .28s cubic-bezier(.23,1,.32,1);transform-origin:100% 100%}.left .o{transform-origin:0 100%}.card .o,.island .o{animation:none}" +
+    "@keyframes jo{from{opacity:0;transform:translateY(10px) scale(.96)}}@media(prefers-reduced-motion:reduce){.o{animation:none}}" +
     "@media(max-width:768px){.frame{inset:0;width:100%;height:100dvh;border-radius:0}}" +
-    // W-04 "bar" (D-32), "card" (D-34) and "island" (D-39) launchers: no button; the frame draws them and says where it goes (jun:css).
+    // W-04 the greeting card (D-34; mode window, launcher "card") and the island (D-39): no button; the frame draws them and says where it goes (jun:css).
     // The button shows the company logo (a chat bubble until one is uploaded), or "Chat with us".
     ".btn img{width:100%;height:100%;object-fit:cover;border-radius:inherit}.txt .btn{width:auto;padding:0 18px;font:600 14px system-ui,sans-serif}" +
-    ".bar .btn,.card .btn,.island .btn{display:none}.bar .frame,.island .frame{display:block;box-shadow:none;background:none}" +
+    // Their frame is always shown (D-90: the card's never resizes; it morphs inside, clipped by jun:css), and draws its own edge.
+    ".card .btn,.island .btn{display:none}.card .frame,.island .frame{display:block}" +
     // Unseen until the frame has sized itself: before that it's the default panel, painted dark by a dark-mode browser.
-    ".bar .frame:not(.sized),.island .frame:not(.sized){visibility:hidden}" +
+    ".card .frame:not(.sized),.island .frame:not(.sized){visibility:hidden}" +
     ".nudge p{margin:0 24px 14px 0}.from{font-size:12px;color:#737373}.go{width:100%;padding:8px 6px;border-radius:calc(var(--r,16px)*.625);background:var(--c);color:var(--t);font:12px Arial,sans-serif}" +
     ".x{position:absolute;top:12px;right:12px;width:30px;height:30px;background:none;font-size:23px;font-weight:300;color:#737373}" +
     "</style><div class=\"w\">" +
@@ -312,8 +324,10 @@
       // Readable text on that colour: the desk works it out (textOn), for data-color too (?color=).
       wrap.style.setProperty("--t", cfg.text);
       openers = !open && cfg.openers;
-      // W-04: side, corner rounding, dark theme, and the launcher (the bar and the card load the frame now).
-      wrap.classList.add(cfg.position, cfg.theme, cfg.launcher); // "left", "dark", "bar", "card"
+      // W-04: side, corner rounding, dark theme, and the launcher (the card and the island load the frame now).
+      // D-89: the desk keeps sending `launcher` (island | card | button) from its mode and greeting card switch.
+      wrap.classList.add(cfg.position, cfg.launcher); // "left", "island", "card"
+      deskTheme = cfg.theme;
       if (cfg.launcher != "button") load();
       // W-21: on a dark button colour (white text on it), the logo made for dark backgrounds if there is one.
       var icon = button.querySelector("svg"), face, logo = (cfg.text == "#ffffff" && cfg.logoDarkUrl) || cfg.logoUrl;
@@ -321,8 +335,16 @@
       else if (logo) face = document.createElement("img"), face.src = origin + logo, face.alt = "";
       if (face) icon.replaceWith(face);
       wrap.style.setProperty("--r", cfg.radius + "px");
+      // AI-32 (D-93): the desk's switch; data-page-control="off" keeps this site out. After consent (connect).
+      pageControl = cfg.pageControl && script.getAttribute("data-page-control") != "off";
+      if (pageControl && consented) chunk("page-control");
     }
+    paintTheme();
     wrap.classList.add("on");
+  }
+  // Only .dark is styled here ("auto" keeps the light button and card; the chat follows the system).
+  function paintTheme() {
+    wrap.classList.toggle("dark", (theme || deskTheme) == "dark");
   }
   setTimeout(brand, 1500);
   nativeFetch(origin + "/api/widget/" + encodeURIComponent(key) + "/config?color=" + encodeURIComponent(color || "")).then(function (r) { return r.json(); }).then(brand, function () { brand(); });
@@ -333,33 +355,34 @@
     if (frame.contentWindow) frame.contentWindow.postMessage(message, origin);
   }
 
-  // The chat loads on first open (the bar launcher draws itself, so it loads straight away).
+  // The chat loads on first open (the card and the island draw themselves, so they load straight away).
   function load() {
     if (!frame.src) frame.src = origin + "/widget?key=" + encodeURIComponent(key) + (consented ? "" : "&persist=0");
   }
   // AI-21 page actions (D-40): WebMCP tools the page registers, offered to the AI. The code lives in
   // widget-actions.js, loaded on first use; until then registrations queue here. Without native
   // WebMCP, a small shim takes document.modelContext.registerTool calls so early page code works.
-  var actionQueue = [], actionsLoading;
-  function loadActions() {
-    if (actionsLoading) return;
-    actionsLoading = 1;
+  // chunk("actions") loads /widget-actions.js once (added scripts run async).
+  var actionQueue = [], chunks = {};
+  function chunk(name) {
+    if (chunks[name]) return;
+    chunks[name] = 1;
     var s = document.createElement("script");
-    s.src = origin + "/widget-actions.js";
-    s.async = true;
+    s.src = origin + "/widget-" + name + ".js";
     document.head.appendChild(s);
   }
-  if (document.modelContext) loadActions();
+  if (document.modelContext) chunk("actions");
   else document.modelContext = {
     jun: 1, q: [],
-    registerTool: function (t, o) { this.q.push([t, o]); loadActions(); },
-    getTools: function () { loadActions(); return new Promise(function (r) { (function w() { document.modelContext.jun ? setTimeout(w, 50) : r(document.modelContext.getTools()); })(); }); },
+    registerTool: function (t, o) { this.q.push([t, o]); chunk("actions"); },
+    getTools: function () { chunk("actions"); return new Promise(function (r) { (function w() { document.modelContext.jun ? setTimeout(w, 50) : r(document.modelContext.getTools()); })(); }); },
   };
   var pendingOpener, onExit;
   function setOpen(next) {
     open = next;
     if (open) hideNudge(), load(), openers = 0;
     frame.style.display = open ? "block" : "";
+    frame.classList.toggle("o", !!open);
     button.setAttribute("aria-expanded", open);
     button.setAttribute("aria-label", open ? "Close chat" : "Open chat");
     post({ type: open ? "jun:open" : "jun:close" });
@@ -383,13 +406,13 @@
     var type = e.data.type;
     // The frame says when it's listening; tell it whether it's currently shown.
     if (type == "jun:ready") {
-      post({ type: "jun:session", sessionId: sid || null, userToken: userToken, persist: consented });
+      post({ type: "jun:session", sessionId: sid || null, userToken: userToken, persist: consented, theme: theme });
       post({ type: open ? "jun:open" : "jun:close" });
       if (pendingOpener) post({ type: "jun:proactive", opener: pendingOpener, sessionId: sid });
     }
     if (type == "jun:proactive-shown") pendingOpener = null;
     if (type == "jun:open" || type == "jun:close") setOpen(type == "jun:open");
-    // The bar frame sizes and clips itself (it knows what it shows); only our own frame gets here.
+    // The card and island frames size and clip themselves (they know what they show); only our own frame gets here.
     if (type == "jun:css") frame.style.cssText = e.data.css, frame.classList.add("sized");
     // AI-20: the intent's exit button ("Cancel anyway"): close, then hand back to the host app, once.
     // After a reload the page's onExit is gone: the chat still closes (the exit itself was recorded by the frame).
@@ -424,6 +447,12 @@
     },
     close: function () { setOpen(false); },
     toggle: function () { setOpen(!open); },
+    // D-92: "light", "dark" or "auto" (the visitor's system) from the site's own theme switch; null = the desk's.
+    setTheme: function (t) {
+      theme = themes.test(t) ? t : null;
+      paintTheme();
+      post({ type: "jun:theme", theme: theme });
+    },
     // Signed-in user: a JWT from your backend. The chat and the visitor list then know who it is.
     identify: function (token) {
       userToken = token || null;
@@ -467,7 +496,7 @@
     registerAction: function (t) {
       var r = { t: t, off: null, dead: false };
       if (window.JunDesk._a) r.off = window.JunDesk._a.register(t);
-      else { actionQueue.push(r); loadActions(); }
+      else { actionQueue.push(r); chunk("actions"); }
       return function () { r.dead = true; if (r.off) r.off(); };
     },
   };
