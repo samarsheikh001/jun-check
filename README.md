@@ -53,7 +53,7 @@ A copy made before the workflow existed: add [`.github/workflows/update-jun.yml`
 
 ## Put the widget on your site
 
-Copy the snippet from **Settings → Install the chat widget** into `<head>`, before your own scripts:
+Copy the snippet from **Chat widget → Install** into `<head>`, before your own scripts:
 
 ```html
 <script src="https://your-desk.example.com/widget.js" data-key="wk_…" defer></script>
@@ -71,9 +71,9 @@ Copy the snippet from **Settings → Install the chat widget** into `<head>`, be
 | `JunDesk.reportError({ message, code? })` | Tells support what failed, in your app's words (see below) |
 | `JunDesk.registerAction({ … })` | Tells the AI what can be done on this page, so it can do it for the visitor (see "Page actions") |
 
-Colour, logo, greeting, button side and business hours are set in **Settings** and apply within a minute without touching the snippet. List your domains under **Allowed websites** so nobody can reuse your (public) widget key on their own site.
+Colour, logo, greeting, button side and business hours are set in **Settings** and apply within a minute without touching the snippet. List your domains under **Chat widget → Behaviour → Allowed websites** so nobody can reuse your (public) widget key on their own site.
 
-**Page openers:** under Settings → Install, owners and admins can offer a chat after a visitor has spent some time on a page (up to 10 rules, e.g. 30 s on `/pricing` or anywhere under `/docs/*`), with your own line or one the AI writes from the page. Only time with the tab in view counts; a visitor gets at most one card per page load, and nothing before consent.
+**Page openers:** under Chat widget → Behaviour, owners and admins can offer a chat after a visitor has spent some time on a page (up to 10 rules, e.g. 30 s on `/pricing` or anywhere under `/docs/*`), with your own line or one the AI writes from the page. Only time with the tab in view counts; a visitor gets at most one card per page load, and nothing before consent.
 
 **What the widget captures:** JavaScript errors, failed requests (method, URL and status, never request or response bodies) and pages visited, kept in memory and sent only when the visitor writes to you. Query values are stripped, and emails, tokens, keys and card-like numbers are masked before anything leaves the browser. It also notices rage clicks (the same button clicked 3+ times in a second with nothing happening; only the element's tag, id, aria-label, name, role and a short button/link label are kept) and visitors stuck on a page for 3 minutes after something failed with no successful submit; both show up for your agents and can trigger the "Want a hand?" nudge.
 
@@ -97,11 +97,11 @@ const remove = JunDesk.registerAction({
 });
 ```
 
-In React, `useJunAction({ … }, [product.id])` from `@jun/widget-react` (in `packages/widget-react`, MIT) registers while the component is on screen and waits for the loader if it hasn't loaded yet. With many actions on a page, the ones the visitor's question names and the ones on screen are offered first (at most 30 per reply). Server tools can be scoped the same way with `pages:` in `tools/<name>.yaml`. You can also pick or make the card on the desk instead of in code: Agent → Actions → "On your website" lists the actions the desk has seen, and once one has run it can make a first card from the shape of its result (field names and types; the values are never kept).
+In React, `useJunAction({ … }, [product.id])` from `@jun/widget-react` (in `packages/widget-react`, MIT) registers while the component is on screen and waits for the loader if it hasn't loaded yet. With many actions on a page, the ones the visitor's question names and the ones on screen are offered first (at most 30 per reply). Server tools can be scoped the same way with `pages:` in `actions/<name>.yaml`. You can also pick or make the card on the desk instead of in code: Agent → Actions → "On your website" lists the actions the desk has seen, and once one has run it can make a first card from the shape of its result (field names and types; the values are never kept).
 
-Agents see every run in the conversation's AI actions; `evals/*.yaml` cases take an `actions:` list, a `page:` path, and can `expect: { action: { name, input } }`, so `jun eval` covers what the AI chooses.
+Agents see every run in the conversation's AI actions; `tests/*.yaml` cases take an `actions:` list, a `page:` path, and can `expect: { action: { name, input } }`, so `jun eval` covers what the AI chooses.
 
-**Signed-in customers:** create an identity secret in Settings → Install. Your backend signs a short-lived HS256 JWT with `sub` (the user's id) and `exp`, plus `email`, `name` and `attributes` if you like (`{ plan: "pro", seats: 12 }`). Agents then see a verified customer, chats follow them across devices, and the AI's tools can look up their own account with `{user.id}`. If your API only accepts the user's own key, add a `secrets` claim (`{ API_TOKEN: "…" }`) and write `{user.secrets.API_TOKEN}` in an action's headers: it's kept only until the token expires (or `JunDesk.logout()`), never shown to agents or the AI. Without a valid token, visitors stay anonymous.
+**Signed-in customers:** create an identity secret in Chat widget → Behaviour. Your backend signs a short-lived HS256 JWT with `sub` (the user's id) and `exp`, plus `email`, `name` and `attributes` if you like (`{ plan: "pro", seats: 12 }`). Agents then see a verified customer, chats follow them across devices, and the AI's tools can look up their own account with `{user.id}`. If your API only accepts the user's own key, add a `secrets` claim (`{ API_TOKEN: "…" }`) and write `{user.secrets.API_TOKEN}` in an action's headers: it's kept only until the token expires (or `JunDesk.logout()`), never shown to agents or the AI. Without a valid token, visitors stay anonymous.
 
 ## The AI
 
@@ -132,7 +132,7 @@ Pasted credentials are kept in the workspace's Durable Object storage, not the d
 
 ## Support agent as code
 
-The AI's persona, procedures, tools and tests are files. Edit them on the **Agent** page, or keep them in git and use the `jun` CLI from a checkout of this repo (create a token in Settings → API tokens):
+The AI's persona, procedures, tools and tests are files. Edit them on the **Agent** page, or keep them in git and use the `jun` CLI from a checkout of this repo (create a token in Settings → Developer → API tokens):
 
 ```sh
 npm run jun -- login https://your-desk.example.com
@@ -143,13 +143,69 @@ npm run jun -- push support-agent -m "Refund window is now 30 days"
 
 | File | What |
 |---|---|
-| `AGENTS.md` | Tone and rules. Frontmatter: `maxReplies`, `handoffTopics` |
-| `skills/<name>/SKILL.md` | Tasks (procedures) in plain language: when they apply and the steps, in the [Agent Skills](https://agentskills.io) format |
-| `tools/<name>.yaml` | HTTP lookups the AI may call, e.g. order status. Secrets go in headers as `{secrets.NAME}` (Worker secret `JUN_SECRET_NAME`). `status:` is the one line the customer sees while it runs ("Checking your order"; default "Looking that up"); they never see the tool's name, inputs or results |
-| `evals/<name>.yaml` | A customer message and what a good reply does: outcome, tools called, or criteria |
+| `instructions.md` | Tone and rules. Frontmatter: `maxReplies`, `handoffTopics` |
+| `tasks/<name>.md` | Tasks (procedures) in plain language: a `description` frontmatter saying when one applies, then the steps. The file name is the task's name |
+| `actions/<name>.yaml` | HTTP lookups the AI may call, e.g. order status. Secrets go in headers as `{secrets.NAME}` (Worker secret `JUN_SECRET_NAME`). `status:` is the one line the customer sees while it runs ("Checking your order"; default "Looking that up"); they never see the tool's name, inputs or results |
+| `tests/<name>.yaml` | A customer message and what a good reply does: outcome, tools called, or criteria |
 | `website-actions.yaml` | How each action on your website runs, over what your site asked for: `auto` (without asking), `confirm` (the customer confirms first) or `human` (a person does it), and optionally the line shown while it runs (`set_pickup: { run: auto, status: "Setting your pickup" }`). Set it under Actions → On your website |
+| `desk.yaml` | The desk's settings: the AI's switches (`ai`), the chat widget (`chat`), business hours (`hours`) and assignment (`inbox`). See below |
+
+`jun pull` and `jun init` also write `AGENTS.md` (a guide to these files for coding AIs: open the folder in Claude Code, Codex or Cursor and ask for a change, then `eval` and `push`), `CLAUDE.md` (`@AGENTS.md`) and `README.md`. They're generated and never pushed.
 
 Every save is a version you can restore, and every tool call is logged next to the conversation. In CI, set `JUN_DESK_URL` and `JUN_DESK_TOKEN` and run `jun eval --fail-on-change`.
+
+### Desk settings as code (`desk.yaml`)
+
+`desk.yaml` holds the desk's settings that are plain choices, so a whole desk can be set up from git, or copied to another desk with `jun pull` and `jun push`. `jun pull` writes it from the desk's current settings; saving it (push, the Agent page's Code view, or Code on the Chat widget page) changes them, and changes made on the settings pages are written back into it (as new versions, keeping your comments). A key or section you leave out is left as it is on the desk.
+
+```yaml
+ai:
+  enabled: true
+  model: default            # or a model id; default = the provider's default
+  models: { editor: gpt-6-astra }   # optional: a model per job
+  monthlyReplyCap: 2000     # 0 = no limit
+chat:                       # the chat widget (the Chat widget page)
+  name: Acme                # "" = your workspace's name
+  color: "#5b4cff"
+  mode: island              # island | window (a corner button that opens a chat window)
+  greetingCard: true        # window: a greeting card over the button
+  button: logo              # window: logo | text
+  position: right           # window: left | right
+  island: { surface: dark, glow: true }   # island only
+  theme: auto               # auto | light | dark
+  rounding: 16              # 0 to 24
+  sound: true
+  greeting: Hi! How can we help?
+  replyTime: Usually replies in a few minutes
+  placeholder: Ask anything…
+  suggestedQuestions: [How much does it cost?, How do I invite my team?]
+  askForRating: true        # "How did we do?" when a chat is resolved
+  allowedWebsites: [acme.com, "*.acme.com"]   # [] = any website
+  offerHelpOnErrors: true
+  openers:                  # after: seconds on the page; no message = the AI writes it
+    - page: /pricing
+      after: 20
+      hint: help choosing a plan
+hours:
+  enabled: true
+  timeZone: Europe/London
+  days: { monday: "09:00-17:30", friday: "09:00-16:00" }   # days not listed are closed
+  awayMessage: Thanks! We're away and will reply here {when}.
+inbox:
+  assignment: { mode: round_robin, capacity: 5 }   # manual | round_robin; 0 = no limit
+```
+
+Not in the file: logos (upload them on the Chat widget page), keys and secrets (identity secret, issue-tracker tokens, action keys, the OpenAI key, ChatGPT sign-in), the AI provider itself, team members and invites, notification preferences, knowledge sources and the install snippet.
+
+### Connect your own AI (MCP)
+
+Every desk serves an MCP server at `/mcp`, so Claude Code, Cursor, Codex or Claude Desktop can change the support agent directly: tasks, actions, widgets, tests and desk settings, each change checked and saved as a version (History, restore). Create a token in Settings → Developer → API tokens, then:
+
+```sh
+claude mcp add --transport http jun https://your-desk.example.com/mcp --header "Authorization: Bearer jun_…"
+```
+
+Settings → Developer shows the snippets for each client.
 
 ## Develop
 

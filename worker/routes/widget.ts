@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { pageControlConfirm } from "../../shared/page-control.ts";
 import { SOCKET_PROTOCOL, type Attachment, type CsatRating } from "../../shared/protocol.ts";
 import { parseRating } from "../../shared/inbox.ts";
 import type { ConversationRef, Participant } from "../conversation.ts";
@@ -98,7 +99,8 @@ widget.get("/widget/:key/config", async (c) => {
   const override = c.req.query("color");
   return c.json(
     {
-      // W-04 appearance: name, greeting, colour, side, logo, theme, rounding, launcher, placeholder, suggestions.
+      // W-04 appearance: name, greeting, colour, side, logo, theme, rounding, mode + greetingCard (D-89) and
+      // the launcher they make (island | card | button: loaders cached in visitors' browsers read it), placeholder, suggestions.
       ...look,
       // Readable text on the button's colour (the loader keeps no colour maths of its own).
       text: textOn(override && /^#[0-9a-f]{6}$/i.test(override) ? override : look.color),
@@ -108,6 +110,10 @@ widget.get("/widget/:key/config", async (c) => {
       openers: s.proactive === false ? [] : forLoader(storedOpeners(s.openers)),
       // W-12: ask for a rating when a conversation is resolved (on unless turned off).
       csat: s.csat !== false,
+      // AI-32 (D-93): the loader loads page control (unless the snippet says data-page-control="off").
+      pageControl: s.pageControl !== false,
+      // AI-32: whether the Confirm card offers "Always allow" (the frame), or asks / runs (the DO decides).
+      pageControlConfirm: pageControlConfirm(s.pageControlConfirm),
       /** Whether new chats are answered by the AI first (the widget shows its typing dots right away). */
       ai: (await loadAiSettings(c.env, inbox.workspaceId)).enabled,
       // I-10: shown in the widget header ("Back tomorrow at 09:00 (London time)").
@@ -258,7 +264,7 @@ widget.post("/widget/:key/visitor", async (c) => {
 // Returns the browser's visitor token for that user (it may change; the frame stores it).
 widget.post("/widget/:key/identify", async (c) => {
   const inbox = await widgetInbox(c);
-  if (!inbox.identitySecret) throw new HttpError(400, "identity_not_configured", "Identity verification isn't set up for this desk (Settings → Install).");
+  if (!inbox.identitySecret) throw new HttpError(400, "identity_not_configured", "Identity verification isn't set up for this desk (Chat widget → Behaviour → Identify signed-in customers).");
   const body = await readJson(c.req);
   if (typeof body.userToken !== "string") throw new HttpError(400, "invalid_field", "userToken is required.");
   let identity;
@@ -290,7 +296,7 @@ widget.post("/widget/:key/logout", async (c) => {
 // report itself and receive invites addressed to its own session.
 widget.get("/widget/:key/live", async (c) => {
   const inbox = await widgetInbox(c);
-  if (!fromAllowedSite(c, inbox)) throw new HttpError(403, "site_not_allowed", "This website isn't allowed to use this widget (Settings → Install → Allowed websites).");
+  if (!fromAllowedSite(c, inbox)) throw new HttpError(403, "site_not_allowed", "This website isn't allowed to use this widget (Chat widget → Behaviour → Allowed websites).");
   const sessionId = c.req.query("s") ?? "";
   if (!/^[A-Za-z0-9_-]{8,64}$/.test(sessionId)) throw new HttpError(400, "invalid_field", "Bad session id.");
   // T-11: the first time the widget runs on a real site (not the desk's demo page), note it

@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { handleCrawlBatch, resyncAll, type CrawlJob } from "./ai/knowledge.ts";
+import { finishStuckSyncs, handleCrawlBatch, resyncAll, type CrawlJob } from "./ai/knowledge.ts";
 import { labelAllWorkspaces } from "./ai/topics.ts";
 import { ai, handleChatGPTCallback } from "./routes/ai.ts";
 import { auth } from "./routes/auth.ts";
@@ -16,6 +16,7 @@ import { visitors } from "./routes/visitors.ts";
 import { workspaces } from "./routes/workspaces.ts";
 import { agent } from "./routes/agent.ts";
 import { frameAncestors } from "./lib/origins.ts";
+import { handleMcp } from "./mcp/route.ts";
 import { HttpError, type AppEnv } from "./types.ts";
 
 export { Conversation } from "./conversation.ts";
@@ -95,15 +96,19 @@ export default {
     // Dev-only ChatGPT sign-in returns to a 127.0.0.1 loopback path outside /api.
     if (pathname === "/auth/callback") return handleChatGPTCallback(request, env);
     if (pathname === "/widget") return serveWidgetFrame(request, env);
+    // D-86: the MCP server for a person's own AI (API token; JSON-RPC over POST).
+    if (pathname === "/mcp") return handleMcp(request, env, ctx);
     return app.fetch(request, env, ctx);
   },
   // Website crawling (K-01).
   async queue(batch, env) {
     await handleCrawlBatch(batch as MessageBatch<CrawlJob>, env);
   },
-  // Every 15 minutes, topic labels for quiet chats (A-02); once a day also the knowledge re-sync.
+  // Every 15 minutes, topic labels for quiet chats (A-02) and stuck website syncs finished (D-88); once a
+  // day also the knowledge re-sync.
   async scheduled(controller, env, ctx) {
     if (isDailyRun(controller.scheduledTime)) ctx.waitUntil(resyncAll(env));
     ctx.waitUntil(labelAllWorkspaces(env));
+    ctx.waitUntil(finishStuckSyncs(env));
   },
 } satisfies ExportedHandler<Env>;
