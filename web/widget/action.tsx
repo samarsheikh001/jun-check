@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { actionSummary, checkInput, type ActionParam, type MessageAction } from "../../shared/actions.ts";
+import { actionInputLine, checkInput, type ActionParam, type MessageAction } from "../../shared/actions.ts";
+import { shownDescription } from "../../shared/page-control.ts";
 
 // AI-21: the card under an AI answer that proposed a page action (D-40), shown only while the
 // action waits on the visitor: it asks for whatever the model left out (fields drawn from the
@@ -76,6 +77,7 @@ export function ActionCard({
   onInput,
   onRun,
   onCancel,
+  onAllowAlways,
 }: {
   action: MessageAction;
   /** The newest thing in the thread: only then does an `auto` action start by itself. */
@@ -86,6 +88,8 @@ export function ActionCard({
   /** Run it on the page with these inputs. */
   onRun: (input: Record<string, unknown>) => void;
   onCancel: () => void;
+  /** AI-32: "Always allow" (page control): remember the yes, then run this one. */
+  onAllowAlways?: () => void;
 }) {
   const [values, setValues] = useState<Record<string, unknown>>({});
   const ran = useRef(false);
@@ -133,10 +137,13 @@ export function ActionCard({
     body = (
       <>
         {/* D-77: what it does in its own words; what it'll use, small under it. */}
-        <p className="w-act-summary">{action.description}</p>
-        {actionSummary({ description: "", input: action.input }) && <p className="w-act-inputs">{actionSummary({ description: "", input: action.input }).replace(/^ · /, "").replace(/^(\w)/, (c) => c.toUpperCase())}</p>}
+        <p className="w-act-summary">{shownDescription(action)}</p>
+        {actionInputLine(action) && <p className="w-act-inputs">{actionInputLine(action).replace(/^(\w)/, (c) => c.toUpperCase())}</p>}
         <div className="w-act-row">
           <button type="button" className="w-act-btn" onClick={run}>{action.risk === "auto" ? "Run" : "Confirm"}</button>
+          {onAllowAlways && (
+            <button type="button" className="w-act-ghost" title="Don't ask again on this site: the AI clicks, types and chooses for you, and each step still shows here" onClick={() => { onAllowAlways(); run(); }}>Always allow</button>
+          )}
           <button type="button" className="w-act-ghost" onClick={onCancel}>Cancel</button>
         </div>
       </>
@@ -147,7 +154,7 @@ export function ActionCard({
 
   return (
     <div className="w-act" data-run={action.runId}>
-      {needs && <p className="w-act-title">{action.description}</p>}
+      {needs && <p className="w-act-title">{shownDescription(action)}</p>}
       {body}
     </div>
   );
