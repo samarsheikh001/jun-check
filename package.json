@@ -1,6 +1,6 @@
 {
   "name": "jun-desk",
-  "version": "0.1.1",
+  "version": "0.1.6",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -21,7 +21,7 @@
     "jun": "node packages/cli/src/index.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.worker.json && tsc -p tsconfig.web.json",
     "test": "node --test \"packages/*/src/**/*.test.ts\" \"worker/**/*.test.ts\" \"shared/**/*.test.ts\" \"web/lib/*.test.ts\" \"scripts/*.test.ts\"",
-    "test:e2e": "node scripts/e2e-auth.ts && node scripts/e2e-chat.ts && node scripts/e2e-ai.ts && node scripts/e2e-debug.ts && node scripts/e2e-agent.ts && node scripts/e2e-visitors.ts && node scripts/e2e-polish.ts && node scripts/e2e-inbox.ts && node scripts/e2e-metrics.ts && node scripts/e2e-issues.ts && node scripts/e2e-knowledge.ts && node scripts/e2e-assignment.ts && node scripts/e2e-topics.ts && node scripts/e2e-notifications.ts && node scripts/e2e-openers.ts && node scripts/e2e-actions.ts && node scripts/e2e-widgets.ts"
+    "test:e2e": "node scripts/e2e-auth.ts && node scripts/e2e-chat.ts && node scripts/e2e-ai.ts && node scripts/e2e-debug.ts && node scripts/e2e-agent.ts && node scripts/e2e-desk.ts && node scripts/e2e-mcp.ts && node scripts/e2e-visitors.ts && node scripts/e2e-polish.ts && node scripts/e2e-inbox.ts && node scripts/e2e-metrics.ts && node scripts/e2e-issues.ts && node scripts/e2e-knowledge.ts && node scripts/e2e-assignment.ts && node scripts/e2e-topics.ts && node scripts/e2e-notifications.ts && node scripts/e2e-openers.ts && node scripts/e2e-actions.ts && node scripts/e2e-widgets.ts"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.62.5",
@@ -44,6 +44,7 @@
     "@base-ui/react": "^1.8.0",
     "@hugeicons/core-free-icons": "^4.3.5",
     "@hugeicons/react": "^1.1.10",
+    "@page-agent/page-controller": "1.12.4",
     "@shadcn/react": "^0.3.1",
     "@simplewebauthn/browser": "^14.0.0",
     "@simplewebauthn/server": "^14.0.3",
